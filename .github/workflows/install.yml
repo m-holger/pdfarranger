@@ -1,7 +1,6 @@
-name: pdfarranger
+name: pdfarranger-mh
 on:
   push:
-    branches: [ main ]
   pull_request:
 jobs:
   build:
@@ -17,11 +16,5 @@ jobs:
       run: desktop-file-validate /usr/share/applications/com.github.jeromerobert.pdfarranger.desktop
     - name: Tests and Coverage
       run: python3 -X tracemalloc -u -m unittest discover -v -f -s tests
-    - name: Codecov
-      run: curl -s https://codecov.io/bash | bash
-  rpmbuild:
-    runs-on: ubuntu-latest
-    container: dreua/pdfarranger-docker-rpm
-    steps:
-    - name: RPM Build
-      run: /pdfarranger/pdfarranger-build
+
+
