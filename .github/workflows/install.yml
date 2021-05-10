@@ -1,4 +1,3 @@
-name: pdfarranger-mh
 on:
   push:
   pull_request:
