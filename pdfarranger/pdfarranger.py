@@ -110,6 +110,7 @@ from . import exporter
 from . import metadata
 from . import croputils
 from . import splitter
+from .const import WriteMode
 from .iconview import CellRendererImage
 from .iconview import IconviewCursor
 from .iconview import IconviewDragSelect
@@ -311,7 +312,7 @@ class PdfArranger(Gtk.Application):
             ('duplicate', self.duplicate),
             ('page-format', self.page_format_dialog),
             ('crop-white-borders', self.crop_white_borders),
-            ('export-selection', self.choose_export_selection_pdf_name, 'i'),
+            ('export-selection', self.on_action_export_selection, 'i'),
             ('export-all', self.on_action_export_all),
             ('reverse-order', self.reverse_order),
             ('save', self.on_action_save),
@@ -619,15 +620,6 @@ class PdfArranger(Gtk.Application):
             GObject.idle_add(self.iconview.set_visible, True)
             self.iconview.grab_focus()
 
-    def set_export_file(self, file):
-        if file != self.export_file:
-            self.export_file = file
-            self.set_unsaved(True)
-
-    def set_unsaved(self, flag):
-        self.is_unsaved = flag
-        GObject.idle_add(self.retitle)
-
     def retitle(self):
         if self.export_file:
             title = self.export_file
@@ -813,7 +805,85 @@ class PdfArranger(Gtk.Application):
             shutil.rmtree(self.tmp_dir)
         self.quit()
 
-    def choose_export_pdf_name(self, mode):
+    def active_file_names(self):
+        """Returns the file names currently associated with pages in the model."""
+        r = set(row[1].split('\n')[0] for row in self.model)
+        r.discard("")
+        return r
+
+    def on_action_new(self, _action, _param, _unknown):
+        """Start a new instance."""
+        if os.name == 'nt':
+            if sys.executable.find('python3.exe') == -1:
+                subprocess.Popen(sys.executable)
+            else:
+                subprocess.Popen([sys.executable, '-mpdfarranger'])
+        else:
+            display = Gdk.Display.get_default()
+            launch_context = display.get_app_launch_context()
+            desktop_file = "%s.desktop"%(self.get_application_id())
+            try:
+                app_info = Gio.DesktopAppInfo.new(desktop_file)
+                app_info.launch([], launch_context)
+            except TypeError:
+                subprocess.Popen([sys.executable, '-mpdfarranger'])
+
+    #
+    # Write actions and related methods
+    #
+
+    def on_action_save(self, _action, _param, _unknown):
+        self.save_or_choose()
+
+    def on_action_save_as(self, _action, _param, _unknown):
+        self.choose_export_pdf_name(WriteMode.SAVE)
+
+    def on_action_export_selection(self, _action, writemode, _unknown):
+        self.choose_export_pdf_name(WriteMode(writemode.get_int32()))
+
+    def on_action_export_all(self, _action, _param, _unknown):
+        self.choose_export_pdf_name(WriteMode.TO_MULTIPLE)
+
+    def save_or_choose(self):
+        """Saves to the previously exported file or shows the export dialog if
+        there was none."""
+        writemode = WriteMode.SAVE
+        try:
+            if self.export_file:
+                self.save(writemode, self.export_file)
+            else:
+                self.choose_export_pdf_name(writemode)
+        except Exception as e:
+            self.error_message_dialog(e)
+
+    @warn_dialog
+    def save(self, writemode, file_out):
+        """Saves to the specified file.  May throw exceptions."""
+        (path, shortname) = os.path.split(file_out)
+        (shortname, ext) = os.path.splitext(shortname)
+        if ext.lower() != '.pdf':
+            file_out = file_out + '.pdf'
+
+        if writemode & WriteMode.SELECTION:
+            selection = self.iconview.get_selected_items()
+            to_export = [row[0] for row in self.model if row.path in selection]
+        else:
+            self.export_directory = path
+            self.set_export_file(file_out)
+            to_export = [row[0] for row in self.model]
+
+        m = metadata.merge(self.metadata, self.pdfqueue)
+        if self.config.content_loss_warning():
+            res, enabled = exporter.check_content(self.window, self.pdfqueue)
+            self.config.set_content_loss_warning(enabled)
+            if res == Gtk.ResponseType.CANCEL:
+                return # Abort
+        exporter.export(self.pdfqueue, to_export, file_out, writemode & WriteMode.TO_MULTIPLE, m)
+
+        if not writemode & WriteMode.EXPORT:
+            self.set_unsaved(False)
+
+    def choose_export_pdf_name(self, writemode):
         """Handles choosing a name for exporting """
 
         chooser = Gtk.FileChooserDialog(title=_('Export…'),
@@ -839,90 +909,19 @@ class PdfArranger(Gtk.Application):
         chooser.destroy()
         if response == Gtk.ResponseType.ACCEPT:
             try:
-                self.save(mode, file_out)
+                self.save(writemode, file_out)
             except Exception as e:
                 traceback.print_exc()
                 self.error_message_dialog(e)
 
-    def active_file_names(self):
-        """Returns the file names currently associated with pages in the model."""
-        r = set(row[1].split('\n')[0] for row in self.model)
-        r.discard("")
-        return r
+    def set_export_file(self, file):
+        if file != self.export_file:
+            self.export_file = file
+            self.set_unsaved(True)
 
-    def on_action_new(self, _action, _param, _unknown):
-        """Start a new instance."""
-        if os.name == 'nt':
-            if sys.executable.find('python3.exe') == -1:
-                subprocess.Popen(sys.executable)
-            else:
-                subprocess.Popen([sys.executable, '-mpdfarranger'])
-        else:
-            display = Gdk.Display.get_default()
-            launch_context = display.get_app_launch_context()
-            desktop_file = "%s.desktop"%(self.get_application_id())
-            try:
-                app_info = Gio.DesktopAppInfo.new(desktop_file)
-                app_info.launch([], launch_context)
-            except TypeError:
-                subprocess.Popen([sys.executable, '-mpdfarranger'])
-
-    def on_action_save(self, _action, _param, _unknown):
-        self.save_or_choose()
-
-    def save_or_choose(self):
-        """Saves to the previously exported file or shows the export dialog if
-        there was none."""
-        savemode = GLib.Variant('i', 0) # Save all pages in a single document.
-        try:
-            if self.export_file:
-                self.save(savemode, self.export_file)
-            else:
-                self.choose_export_pdf_name(savemode)
-        except Exception as e:
-            self.error_message_dialog(e)
-
-    def on_action_save_as(self, _action, _param, _unknown):
-        self.choose_export_pdf_name(GLib.Variant('i', 0))
-
-    @warn_dialog
-    def save(self, mode, file_out):
-        """Saves to the specified file.  May throw exceptions."""
-        (path, shortname) = os.path.split(file_out)
-        (shortname, ext) = os.path.splitext(shortname)
-        if ext.lower() != '.pdf':
-            file_out = file_out + '.pdf'
-
-        exportmodes = {0: 'ALL_TO_SINGLE',
-                       1: 'ALL_TO_MULTIPLE',
-                       2: 'SELECTED_TO_SINGLE',
-                       3: 'SELECTED_TO_MULTIPLE'}
-        exportmode = exportmodes[mode.get_int32()]
-
-        if exportmode in ['SELECTED_TO_SINGLE', 'SELECTED_TO_MULTIPLE']:
-            selection = self.iconview.get_selected_items()
-            to_export = [row[0] for row in self.model if row.path in selection]
-        else:
-            self.export_directory = path
-            self.set_export_file(file_out)
-            to_export = [row[0] for row in self.model]
-
-        m = metadata.merge(self.metadata, self.pdfqueue)
-        if self.config.content_loss_warning():
-            res, enabled = exporter.check_content(self.window, self.pdfqueue)
-            self.config.set_content_loss_warning(enabled)
-            if res == Gtk.ResponseType.CANCEL:
-                return # Abort
-        exporter.export(self.pdfqueue, to_export, file_out, mode, m)
-
-        if exportmode == 'ALL_TO_SINGLE':
-            self.set_unsaved(False)
-
-    def choose_export_selection_pdf_name(self, _action, mode, _unknown):
-        self.choose_export_pdf_name(mode)
-
-    def on_action_export_all(self, _action, _param, _unknown):
-        self.choose_export_pdf_name(GLib.Variant('i', 1))
+    def set_unsaved(self, flag):
+        self.is_unsaved = flag
+        GObject.idle_add(self.retitle)
 
     def on_action_add_doc_activate(self, _action, _param, _unknown):
         """Import doc"""

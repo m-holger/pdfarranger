@@ -131,13 +131,7 @@ def check_content(parent, pdf_list):
     return Gtk.ResponseType.OK, True
 
 
-def export(input_files, pages, file_out, mode, mdata):
-    exportmodes = {0: 'ALL_TO_SINGLE',
-                   1: 'ALL_TO_MULTIPLE',
-                   2: 'SELECTED_TO_SINGLE',
-                   3: 'SELECTED_TO_MULTIPLE'}
-    exportmode = exportmodes[mode.get_int32()]
-
+def export(input_files, pages, file_out, to_multiple, mdata):
     global _report_pikepdf_err
     pdf_output = pikepdf.Pdf.new()
     pdf_input = [pikepdf.open(p.copyname, password=p.password) for p in input_files]
@@ -164,7 +158,7 @@ def export(input_files, pages, file_out, mode, mdata):
             indirect_annots = pdf_temp.make_indirect(pdf_temp.pages[0].Annots)
             pdf_output.pages[-1].Annots = pdf_output.copy_foreign(indirect_annots)
 
-    if exportmode in ['ALL_TO_MULTIPLE', 'SELECTED_TO_MULTIPLE']:
+    if to_multiple:
         for n, page in enumerate(pdf_output.pages):
             outpdf = pikepdf.Pdf.new()
             _set_meta(mdata, pdf_input, outpdf)
