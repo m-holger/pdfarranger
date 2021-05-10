@@ -1,7 +1,6 @@
 name: pdfarranger
 on:
   push:
-    branches: [ dev ]
   pull_request:
 jobs:
   build:
