@@ -1,4 +1,4 @@
-name: pdfarranger-mh-dev
+name: pdfarranger
 on:
   push:
     branches: [ dev ]
@@ -16,4 +16,4 @@ jobs:
     - name: Validate Desktop File
       run: desktop-file-validate /usr/share/applications/com.github.jeromerobert.pdfarranger.desktop
     - name: Tests and Coverage
-      run: GH=1 python3 -X tracemalloc -u -m unittest discover -v -f -s tests 
+      run: GH=1 python3 -X tracemalloc -u -m unittest discover -v -f -s tests
