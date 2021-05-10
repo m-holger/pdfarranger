@@ -1,7 +1,7 @@
-name: pdfarranger
+name: pdfarranger-mh-dev
 on:
   push:
-    branches: [ main ]
+    branches: [ dev ]
   pull_request:
 jobs:
   build:
@@ -16,34 +16,4 @@ jobs:
     - name: Validate Desktop File
       run: desktop-file-validate /usr/share/applications/com.github.jeromerobert.pdfarranger.desktop
     - name: Tests and Coverage
-      run: python3 -X tracemalloc -u -m unittest discover -v -f -s tests
-    - name: Codecov
-      run: curl -s https://codecov.io/bash | bash
-  build-win32:
-    runs-on: ubuntu-latest
-    container:
-      image: jeromerobert/wine-mingw64
-      options: --user root
-    steps:
-    - uses: actions/checkout@v2
-    - run: ./setup.py build
-    - run: HOME=/root wine python setup_win32.py bdist_msi
-    - run: HOME=/root wine python setup_win32.py bdist_zip
-    - uses: actions/upload-artifact@v2
-      with:
-        name: pdfarranger-windows-installer-msi
-        path: dist/*.msi
-    - uses: actions/upload-artifact@v2
-      with:
-        name: pdfarranger-windows-portable-zip
-        path: dist/*.zip
-  rpmbuild:
-    runs-on: ubuntu-latest
-    container: dreua/pdfarranger-docker-rpm
-    steps:
-    - name: RPM Build
-      run: /pdfarranger/pdfarranger-build
-    - uses: actions/upload-artifact@v2
-      with:
-        name: pdfarranger-fedora-testbuild
-        path: /github/home/rpmbuild/**/*.rpm
+      run: GH=1 python3 -X tracemalloc -u -m unittest discover -v -f -s tests
