@@ -27,7 +27,6 @@ import gettext
 import gc
 import subprocess
 import ctypes
-import enum
 import pikepdf
 from urllib.request import url2pathname
 from functools import lru_cache
@@ -111,6 +110,7 @@ from . import exporter
 from . import metadata
 from . import croputils
 from . import splitter
+from .const import WriteMode
 from .iconview import CellRendererImage
 from .iconview import IconviewCursor
 from .iconview import IconviewDragSelect
@@ -194,14 +194,6 @@ def get_file_path_from_uri(uri):
     if os.name == 'posix':
         path = '/' + path
     return path
-
-
-class WriteMode(enum.Flag):
-    SAVE = 0
-    TO_MULTIPLE = 1
-    SELECTION = 2
-    EXPORT = 3
-    SAVE_AS = 4
 
 
 class PdfArranger(Gtk.Application):
@@ -478,7 +470,6 @@ class PdfArranger(Gtk.Application):
 
         self.model.connect('row-inserted', self.__update_num_pages)
         self.model.connect('row-deleted', self.__update_num_pages)
-        self.model.connect('row-deleted', self.reset_export_file)
 
         # Progress bar
         self.progress_bar = self.uiXML.get_object('progressbar')
@@ -745,7 +736,7 @@ class PdfArranger(Gtk.Application):
                 return True
             elif response == 3:
                 # Save.
-                self.save_or_choose()
+                self.write()
                 # Quit only if it has been really saved.
                 if self.is_unsaved:
                     return True
@@ -803,58 +794,54 @@ class PdfArranger(Gtk.Application):
     #
 
     def on_action_save(self, _action, _param, _unknown):
-        self.save_or_choose()
+        self.write()
 
     def on_action_save_as(self, _action, _param, _unknown):
-        self.choose_export_pdf_name(WriteMode.SAVE)
+        self.write(WriteMode.SAVE_AS)
 
     def on_action_export_selection(self, _action, writemode, _unknown):
-        self.choose_export_pdf_name(WriteMode(writemode.get_int32()))
+        self.write(WriteMode(writemode.get_int32()))
 
     def on_action_export_all(self, _action, _param, _unknown):
-        self.choose_export_pdf_name(WriteMode.TO_MULTIPLE)
-
-    def save_or_choose(self):
-        """Saves to the previously exported file or shows the export dialog if
-        there was none."""
-        writemode = WriteMode.SAVE
-        try:
-            if self.export_file:
-                self.save(writemode, self.export_file)
-            else:
-                self.choose_export_pdf_name(writemode)
-        except Exception as e:
-            self.error_message_dialog(e)
+        self.write(WriteMode.TO_MULTIPLE)
 
     @warn_dialog
-    def save(self, writemode, file_out):
-        """Saves to the specified file.  May throw exceptions."""
-        (path, shortname) = os.path.split(file_out)
-        (shortname, ext) = os.path.splitext(shortname)
-        if ext.lower() != '.pdf':
-            file_out = file_out + '.pdf'
+    def write(self, writemode=WriteMode.SAVE):
+        '''
+        Save or export the current document (all or selected pages)
+        '''
+        if writemode == WriteMode.SAVE and self.export_file is not None:
+            file_out = self.export_file
+        else:
+            file_out = self.choose_output_file(writemode)
+            if file_out is None:
+                return  # Abort
 
         if writemode & WriteMode.SELECTION:
             selection = self.iconview.get_selected_items()
             to_export = [row[0] for row in self.model if row.path in selection]
         else:
-            self.export_directory = path
-            self.set_export_file(file_out)
             to_export = [row[0] for row in self.model]
 
-        m = metadata.merge(self.metadata, self.pdfqueue)
-        if self.config.content_loss_warning():
-            res, enabled = exporter.check_content(self.window, self.pdfqueue)
-            self.config.set_content_loss_warning(enabled)
-            if res == Gtk.ResponseType.CANCEL:
-                return # Abort
-        exporter.export(self.pdfqueue, to_export, file_out, writemode & WriteMode.TO_MULTIPLE, m)
+        try:
+            m = metadata.merge(self.metadata, self.pdfqueue)
+            if self.config.content_loss_warning():
+                res, enabled = exporter.check_content(self.window, self.pdfqueue)
+                self.config.set_content_loss_warning(enabled)
+                if res == Gtk.ResponseType.CANCEL:
+                    return # Abort
+            exporter.export(self.pdfqueue, to_export, file_out, writemode & WriteMode.TO_MULTIPLE, m)
 
-        if writemode | WriteMode.SAVE_AS == WriteMode.SAVE_AS: # i.e. SAVE or SAVE_AS
-            self.set_unsaved(False)
+            if not(writemode & WriteMode.EXPORT):
+                self.set_unsaved(False)
+        except Exception as e:
+            traceback.print_exc()
+            self.error_message_dialog(e)
 
-    def choose_export_pdf_name(self, writemode):
-        """Handles choosing a name for exporting """
+    def choose_output_file(self, writemode : WriteMode) -> str:
+        '''
+        Handles choosing a name for saving or exporting
+        '''
 
         chooser = Gtk.FileChooserDialog(title=_('Export…'),
                                         parent=self.window,
@@ -878,19 +865,21 @@ class PdfArranger(Gtk.Application):
         file_out = chooser.get_filename()
         chooser.destroy()
         if response == Gtk.ResponseType.ACCEPT:
-            try:
-                self.save(writemode, file_out)
-            except Exception as e:
-                traceback.print_exc()
-                self.error_message_dialog(e)
+            (path, shortname) = os.path.split(file_out)
+            (shortname, ext) = os.path.splitext(shortname)
+            if ext.lower() != '.pdf':
+                file_out = file_out + '.pdf'
+            if not(writemode & WriteMode.EXPORT):
+                if file_out != self.export_file:
+                    self.export_directory = path
+                    self.export_file = file_out
+                    self.set_unsaved()
+            return file_out
+        else:
+            return None
 
-    def set_export_file(self, file):
-        if file != self.export_file:
-            self.export_file = file
-            self.set_unsaved(True)
-
-    def set_unsaved(self, flag):
-        self.is_unsaved = flag
+    def set_unsaved(self, unsaved=True):
+        self.is_unsaved = unsaved
         GObject.idle_add(self.retitle)
 
     def on_action_add_doc_activate(self, _action, _param, _unknown):
@@ -1958,14 +1947,13 @@ class PdfArranger(Gtk.Application):
         about_dialog.connect('delete_event', lambda w, *args: w.destroy())
         about_dialog.show_all()
 
-    def reset_export_file(self, model, _path, _itr=None, _user_data=None):
-        if len(model) == 0:
-            self.set_export_file(None)
-            self.set_unsaved(False)
-
     def __update_num_pages(self, model, _path=None, _itr=None, _user_data=None):
         num_pages = len(model)
         self.uiXML.get_object("num_pages").set_text(str(num_pages))
+        # The logic of doing the following escapes me
+        if num_pages == 0:
+            self.export_file = None
+            self.set_unsaved(False)
         for a in ["save", "save-as", "select", "export-all"]:
             self.window.lookup_action(a).set_enabled(num_pages > 0)
 
