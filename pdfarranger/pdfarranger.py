@@ -403,10 +403,10 @@ class PdfArranger(Gtk.Application):
         self.window.set_title(APPNAME)
         self.window.set_border_width(0)
         self.window.set_application(self)
-        if self.config.maximized():
+        if self.config.maximized:
             self.window.maximize()
-        self.window.set_default_size(*self.config.window_size())
-        self.window.move(*self.config.position())
+        self.window.set_default_size(*self.config.window_size)
+        self.window.move(*self.config.position)
         self.window.connect('delete_event', self.on_quit)
         self.window.connect('focus_in_event', self.window_focus_in_out_event)
         self.window.connect('focus_out_event', self.window_focus_in_out_event)
@@ -428,7 +428,7 @@ class PdfArranger(Gtk.Application):
         # Create ListStore model and IconView
         self.model = Gtk.ListStore(GObject.TYPE_PYOBJECT, str)
         self.undomanager = undo.Manager(self)
-        self.zoom_set(self.config.zoom_level())
+        self.zoom_set(self.config.zoom_level)
 
         self.iconview = Gtk.IconView(self.model)
         self.iconview.clear()
@@ -766,10 +766,10 @@ class PdfArranger(Gtk.Application):
         # Release Poppler.Document instances to unlock all temporay files
         self.pdfqueue = []
         gc.collect()
-        self.config.set_window_size(self.window.get_size())
-        self.config.set_maximized(self.window.is_maximized())
-        self.config.set_zoom_level(self.zoom_level)
-        self.config.set_position(self.window.get_position())
+        self.config.window_size = self.window.get_size()
+        self.config.maximized = self.window.is_maximized()
+        self.config.zoom_level = self.zoom_level
+        self.config.position = self.window.get_position()
         self.config.save()
         if os.path.isdir(self.tmp_dir):
             shutil.rmtree(self.tmp_dir)
@@ -870,9 +870,8 @@ class PdfArranger(Gtk.Application):
             to_export = [row[0] for row in self.model]
 
         m = metadata.merge(self.metadata, self.pdfqueue)
-        if self.config.content_loss_warning():
-            res, enabled = exporter.check_content(self.window, self.pdfqueue)
-            self.config.set_content_loss_warning(enabled)
+        if self.config.content_loss_warning:
+            res, self.config.content_loss_warning = exporter.check_content(self.window, self.pdfqueue)
             if res == Gtk.ResponseType.CANCEL:
                 return # Abort
         exporter.export(self.pdfqueue, to_export, file_out, mode, m)
