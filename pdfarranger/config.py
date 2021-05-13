@@ -102,39 +102,54 @@ class Config(object):
             if not enable_custom or k not in a:
                 a[k] = v
 
+    @property
     def window_size(self):
         ds = Gdk.Screen.get_default()
         return self.data.getint('window', 'width', fallback=int(min(700, ds.get_width() / 2))), \
             self.data.getint('window', 'height', fallback=int(min(600, ds.get_height() - 50)))
 
-    def set_window_size(self, size):
+    @window_size.setter
+    def window_size(self, size):
         self.data.set('window', 'width', str(size[0]))
         self.data.set('window', 'height', str(size[1]))
 
-    def set_position(self, position):
-        self.data.set('window', 'root_x', str(position[0]))
-        self.data.set('window', 'root_y', str(position[1]))
-
+    @property
     def position(self):
         return self.data.getint('window', 'root_x', fallback=10), self.data.getint('window', 'root_y', fallback=10)
 
+    @position.setter
+    def position(self, position):
+        self.data.set('window', 'root_x', str(position[0]))
+        self.data.set('window', 'root_y', str(position[1]))
+
+    @property
     def maximized(self):
         return self.data.getboolean('window', 'maximized', fallback=False)
 
-    def set_maximized(self, maximized):
+    @maximized.setter
+    def maximized(self, maximized):
         self.data.set('window', 'maximized', str(maximized))
 
+    @property
     def zoom_level(self):
         return self.data.getint('preferences', 'zoom-level', fallback=0)
 
-    def set_zoom_level(self, level):
+    @zoom_level.setter
+    def zoom_level(self, level):
         self.data.set('preferences', 'zoom-level', str(level))
 
+    @property
     def content_loss_warning(self):
         return self.data.getboolean('preferences', 'content-loss-warning', fallback=True)
 
-    def set_content_loss_warning(self, enabled):
+    @content_loss_warning.setter
+    def content_loss_warning(self, enabled):
         self.data.set('preferences', 'content-loss-warning', str(enabled))
+
+    @property
+    def export_filename_format(self):
+        return self.data.get('preferences', 'export-filename-format', fallback='{}-{:03d}{}')
+
 
     def save(self):
         conffile = Config._config_file(self.domain)
