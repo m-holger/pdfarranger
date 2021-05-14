@@ -110,11 +110,12 @@ from . import exporter
 from . import metadata
 from . import croputils
 from . import splitter
+from . import modelview
 from .iconview import CellRendererImage
 from .iconview import IconviewCursor
 from .iconview import IconviewDragSelect
 from .config import Config
-from .core import img2pdf_supported_img, PageAdder, PDFDocError, PDFRenderer
+from .core import img2pdf_supported_img, PageAdder, PDFDocError, PDFRenderer, PDFDoc
 GObject.type_register(CellRendererImage)
 
 
@@ -247,7 +248,7 @@ class PdfArranger(Gtk.Application):
         self.iv_auto_scroll_direction = 0
         self.iv_auto_scroll_timer = None
         self.vp_css_margin = 0
-        self.pdfqueue = []
+        self.pdfqueue = PDFDoc.pdfdocs
         self.metadata = {}
         self.pressed_button = None
         self.click_path = None
@@ -426,11 +427,11 @@ class PdfArranger(Gtk.Application):
         self.sw.connect('scroll_event', self.sw_scroll_event)
 
         # Create ListStore model and IconView
-        self.model = Gtk.ListStore(GObject.TYPE_PYOBJECT, str)
+        self.iconview = modelview.PageView()
+        self.model = self.iconview.model
         self.undomanager = undo.Manager(self)
         self.zoom_set(self.config.zoom_level())
 
-        self.iconview = Gtk.IconView(self.model)
         self.iconview.clear()
         self.iconview.set_item_width(-1)
 
@@ -764,8 +765,7 @@ class PdfArranger(Gtk.Application):
         self.iconview.get_model().clear()
 
         # Release Poppler.Document instances to unlock all temporay files
-        self.pdfqueue = []
-        gc.collect()
+        PDFDoc.close_all_poppler_docs()
         self.config.set_window_size(self.window.get_size())
         self.config.set_maximized(self.window.is_maximized())
         self.config.set_zoom_level(self.zoom_level)

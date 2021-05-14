@@ -25,6 +25,7 @@ __all__ = [
 
 import sys
 import os
+import gc
 import mimetypes
 import copy
 import pathlib
@@ -78,6 +79,22 @@ class Page:
         self.scale = scale
         #: The name of the original file
         self.basename = basename
+
+
+
+    @property
+    def pdfdoc(self):
+        '''
+        The PDFDoc instance associated with this page
+        '''
+        return PDFDoc.get_pdfdoc(self.nfile)
+
+    @property
+    def poppler_page(self):
+        '''
+        The Poppler Page associated with this page
+        '''
+        return PDFDoc.get_poppler_page(self.nfile, self.npage)
 
     def description(self):
         shortname = os.path.splitext(self.basename)[0]
@@ -229,6 +246,29 @@ class PasswordDialog(Gtk.Dialog):
 
 class PDFDoc:
     """Class handling PDF documents."""
+
+    pdfdocs = [] # all instances of PDFDoc, same as PdfArranger.pdfqueue
+
+    @classmethod
+    def close_all_poppler_docs(klass):
+        for pdfdoc in klass.pdfdocs:
+            del(pdfdoc.document)
+        gc.collect()
+
+    @classmethod
+    def get_pdfdoc(klass, nfile):
+        return klass.pdfdocs[nfile-1]
+
+    @classmethod
+    def get_poppler_doc(klass, nfile):
+        return klass.pdfdocs[nfile-1].document
+
+    @classmethod
+    def get_poppler_page(klass, nfile, npage):
+        return klass.pdfdocs[nfile-1].document.get_page(npage - 1)
+
+
+
 
     def __from_file(self, parent, basename):
         uri = pathlib.Path(self.copyname).as_uri()
