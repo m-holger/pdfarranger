@@ -111,6 +111,7 @@ from . import exporter
 from . import metadata
 from . import croputils
 from . import splitter
+from .const import WriteMode
 from .iconview import CellRendererImage
 from .iconview import IconviewCursor
 from .iconview import IconviewDragSelect
