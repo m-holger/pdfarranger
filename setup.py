@@ -19,10 +19,24 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
-
+import os
 from setuptools import setup
 from DistUtilsExtra.command import (
     build_i18n, clean_i18n, build_extra, build_icons)
+
+gh_workflow = os.environ.get('GH', None)
+
+if gh_workflow is None:
+    install_requires = ['pikepdf>=2.12.0','python-dateutil>=2.8.1']
+    extras_require = {
+            'image': ['img2pdf>=0.4.1'],
+    }
+else:
+    install_requires = ['pikepdf>=1.7.0','python-dateutil>=2.4.0']
+    extras_require = {
+            'image': ['img2pdf>=0.3.4'],
+        }
+
 
 data_files = [
     ('share/applications', ['data/com.github.jeromerobert.pdfarranger.desktop']),
@@ -51,8 +65,6 @@ setup(
     entry_points={
         'console_scripts': ['pdfarranger=pdfarranger.pdfarranger:main']
     },
-    install_requires=['pikepdf>=1.17.0','python-dateutil>=2.4.0'],
-    extras_require={
-        'image': ['img2pdf>=0.3.4'],
-    },
+    install_requires=install_requires,
+    extras_require=extras_require
 )

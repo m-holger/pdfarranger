@@ -27,6 +27,7 @@ import gettext
 import gc
 import subprocess
 import ctypes
+import enum
 import pikepdf
 from urllib.request import url2pathname
 from functools import lru_cache
@@ -194,6 +195,14 @@ def get_file_path_from_uri(uri):
     if os.name == 'posix':
         path = '/' + path
     return path
+
+
+class WriteMode(enum.Flag):
+    SAVE = 0
+    TO_MULTIPLE = 1
+    SELECTION = 2
+    EXPORT = 3
+    SAVE_AS = 4
 
 
 class PdfArranger(Gtk.Application):
