@@ -59,29 +59,64 @@ except ImportError:
 _ = gettext.gettext
 
 
-class Page:
-    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop, size_orig, basename, layerpages):
-        #: The ID (from 1 to n) of the PDF file owning the page
+class BasePage:
+    """Common base class for Page and LayerPage"""
+
+    def __init__(self, nfile, npage, copyname, angle, scale, crop, size_orig):
         self.nfile = nfile
-        #: The ID (from 1 to n) of the page in its owner PDF document
+        """The ID (from 1 to n) of the PDF file owning the page"""
         self.npage = npage
-        self.zoom = zoom
-        #: Filepath to the temporary stored file
+        """The ID (from 1 to n) of the page in its owner PDF document"""
         self.copyname = copyname
-        #: Left, right, top, bottom crop
-        self.crop = list(crop)
-        #: Width and height of the original page
-        self.size_orig = list(size_orig)
-        #: Width and height
-        self.size = list(size_orig) if angle in [0, 180] else list(reversed(size_orig))
+        """Filepath to the temporary stored file"""
         self.angle = angle
+        self.scale = scale
+        self.crop = list(crop)
+        """Left, right, top, bottom crop"""
+        self.size_orig = list(size_orig)
+        """Width and height of the original page"""
+        self.size = list(size_orig) if angle in [0, 180] else list(reversed(size_orig))
+        """Width and height"""
+
+    def width_in_points(self):
+        """Return the page width in PDF points."""
+        return self.scale * self.size[0] * (1 - self.crop[0] - self.crop[1])
+
+    def height_in_points(self):
+        """Return the page height in PDF points."""
+        return self.scale * self.size[1] * (1 - self.crop[2] - self.crop[3])
+
+    def size_in_points(self):
+        """Return the page size in PDF points."""
+        return (self.width_in_points(), self.height_in_points())
+
+    @staticmethod
+    def rotate_times(angle):
+        """Convert an angle in degree to a number of 90° rotation (integer)."""
+        return int(round(((-angle) % 360) / 90) % 4)
+
+    @staticmethod
+    def rotate_array(array, rotate_times):
+        """Rotate a given crop or offset array (left, right, top bottom) a number of times counter-clockwise."""
+        # Arrays are rotated. This method 'un-rotates' them.
+        perm = [0, 2, 1, 3]
+        for __ in range(rotate_times):
+            perm.append(perm.pop(0))
+        perm.insert(1, perm.pop(2))
+        return [array[x] for x in perm]
+
+
+class Page(BasePage):
+    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop, size_orig, basename, layerpages):
+        super().__init__(nfile, npage, copyname, angle, scale, crop, size_orig)
+        self.zoom = zoom
         self.thumbnail = None
         self.resample = -1
-        #: A low resolution thumbnail
         self.preview = None
-        self.scale = scale
+        """A low resolution thumbnail"""
         #: The name of the original file
         self.basename = basename
+        """The name of the original file"""
         self.layerpages = list(layerpages)
 
     def __repr__(self):
@@ -92,43 +127,17 @@ class Page:
         shortname = os.path.splitext(self.basename)[0]
         return "".join([shortname, "\n", _("page"), " ", str(self.npage)])
 
-    def width_in_points(self):
-        """Return the page width in PDF points."""
-        return (self.scale * self.size[0]) * (1 - self.crop[0] - self.crop[1])
-
-    def height_in_points(self):
-        """Return the page height in PDF points."""
-        return (self.scale * self.size[1]) * (1 - self.crop[2] - self.crop[3])
-
-    def size_in_points(self):
-        """Return the page size in PDF points."""
-        return (self.width_in_points(), self.height_in_points())
-
     def width_in_pixel(self):
         return int(0.5 + self.zoom * self.width_in_points())
 
     def height_in_pixel(self):
         return int(0.5 + self.zoom * self.height_in_points())
 
-    @staticmethod
-    def rotate_times(angle):
-        """Convert an angle in degree to a number of 90° rotation (integer)"""
-        return int(round(((-angle) % 360) / 90) % 4)
-
-    @staticmethod
-    def rotate_crop(croparray, rotate_times):
-        """Rotate a given crop array (left, right, top bottom) a number of time"""
-        perm = [0, 2, 1, 3]
-        for __ in range(rotate_times):
-            perm.append(perm.pop(0))
-        perm.insert(1, perm.pop(2))
-        return [croparray[x] for x in perm]
-
     def rotate(self, angle):
         rt = self.rotate_times(angle)
         if rt == 0:
             return False
-        self.crop = self.rotate_crop(self.crop, rt)
+        self.crop = self.rotate_array(self.crop, rt)
         self.angle = (self.angle + int(angle)) % 360
         self.size = self.size_orig if self.angle in [0, 180] else list(reversed(self.size_orig))
         for lp in self.layerpages:
@@ -187,51 +196,19 @@ class Page:
         return newpages
 
 
-class LayerPage:
+class LayerPage(BasePage):
     """Page added as overlay or underlay on a Page."""
 
     def __init__(self, nfile, npage, copyname, angle, scale, crop, offset, laypos, size_orig):
-        self.nfile = nfile
-        self.npage = npage
-        self.copyname = copyname
-        self.angle = angle
-        self.scale = scale
-        #: Left, right, top, bottom crop
-        self.crop = crop
+        super().__init__(nfile, npage, copyname, angle, scale, crop, size_orig)
         #: Left, right, top, bottom offset from dest page edges
         self.offset = offset
         #: OVERLAY or UNDERLAY
         self.laypos = laypos
-        #: Width and height of the original page
-        self.size_orig = list(size_orig)
-        #: Width and height
-        self.size = list(size_orig) if angle in [0, 180] else list(reversed(size_orig))
 
     def __repr__(self):
         return (f"LayerPage({self.nfile}, {self.npage}, '{self.copyname}', {self.angle}, "
                 f"{self.scale}, {self.crop}, {self.offset}, '{self.laypos}', {self.size_orig})")
-
-    def width_in_points(self):
-        """Return the page width in PDF points."""
-        return self.scale * self.size[0] * (1 - self.crop[0] - self.crop[1])
-
-    def height_in_points(self):
-        """Return the page height in PDF points."""
-        return self.scale * self.size[1] * (1 - self.crop[2] - self.crop[3])
-
-    @staticmethod
-    def rotate_times(angle):
-        """Convert an angle in degree to a number of 90° rotation (integer)."""
-        return int(round(((-angle) % 360) / 90) % 4)
-
-    @staticmethod
-    def rotate_array(array, rotate_times):
-        """Rotate a given crop or offset array (left, right, top bottom) a number of times."""
-        perm = [0, 2, 1, 3]
-        for __ in range(rotate_times):
-            perm.append(perm.pop(0))
-        perm.insert(1, perm.pop(2))
-        return [array[x] for x in perm]
 
     def rotate(self, angle):
         rt = self.rotate_times(angle)
