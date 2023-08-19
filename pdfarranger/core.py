@@ -197,7 +197,7 @@ class LayerPage:
         self.angle = angle
         self.scale = scale
         #: Left, right, top, bottom crop
-        self.crop = crop
+        self.crop = list(crop)
         #: Left, right, top, bottom offset from dest page edges
         self.offset = offset
         #: OVERLAY or UNDERLAY
