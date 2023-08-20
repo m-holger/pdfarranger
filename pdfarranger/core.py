@@ -32,6 +32,7 @@ import pathlib
 import shutil
 import tempfile
 import threading
+from typing import NamedTuple, Union
 import gettext
 import gi
 from gi.repository import GObject
@@ -59,10 +60,22 @@ except ImportError:
 _ = gettext.gettext
 
 
+class Dims(NamedTuple):
+    width: Union[float, int]
+    height: Union[float, int]
+
+    def flipped(self) -> "Dims":
+        """Swap height and width"""
+        return Dims(self.height, self.width)
+
+    def scaled(self, factor: float) -> "Dims":
+        """Scale by factor"""
+        return Dims(self.width * factor, self.height * factor)
+
 class BasePage:
     """Common base class for Page and LayerPage"""
 
-    def __init__(self, nfile, npage, copyname, angle, scale, crop, size_orig):
+    def __init__(self, nfile, npage, copyname, angle, scale, crop, size_orig: Dims):
         self.nfile = nfile
         """The ID (from 1 to n) of the PDF file owning the page"""
         self.npage = npage
@@ -73,18 +86,18 @@ class BasePage:
         self.scale = scale
         self.crop = list(crop)
         """Left, right, top, bottom crop"""
-        self.size_orig = list(size_orig)
+        self.size_orig = size_orig
         """Width and height of the original page"""
-        self.size = list(size_orig) if angle in [0, 180] else list(reversed(size_orig))
+        self.size = size_orig if angle in [0, 180] else size_orig.flipped()
         """Width and height"""
 
     def width_in_points(self):
         """Return the page width in PDF points."""
-        return self.scale * self.size[0] * (1 - self.crop[0] - self.crop[1])
+        return self.scale * self.size.width * (1 - self.crop[0] - self.crop[1])
 
     def height_in_points(self):
         """Return the page height in PDF points."""
-        return self.scale * self.size[1] * (1 - self.crop[2] - self.crop[3])
+        return self.scale * self.size.height * (1 - self.crop[2] - self.crop[3])
 
     def size_in_points(self):
         """Return the page size in PDF points."""
@@ -97,7 +110,7 @@ class BasePage:
 
 
 class Page(BasePage):
-    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop, size_orig, basename, layerpages):
+    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop, size_orig: Dims, basename, layerpages):
         super().__init__(nfile, npage, copyname, angle, scale, crop, size_orig)
         self.zoom = zoom
         self.thumbnail = None
@@ -138,7 +151,7 @@ class Page(BasePage):
             return False
         self.crop = self.rotate_crop(self.crop, rt)
         self.angle = (self.angle + int(angle)) % 360
-        self.size = self.size_orig if self.angle in [0, 180] else list(reversed(self.size_orig))
+        self.size = self.size_orig if self.angle in [0, 180] else self.size_orig.flipped()
         for lp in self.layerpages:
             lp.rotate(angle)
         return True
@@ -157,7 +170,6 @@ class Page(BasePage):
     def duplicate(self, incl_thumbnail=True):
         r = copy.copy(self)
         r.crop = list(r.crop)
-        r.size = list(r.size)
         r.layerpages = [lp.duplicate() for lp in r.layerpages]
         if incl_thumbnail == False:
             del r.thumbnail  # to save ram
@@ -198,7 +210,7 @@ class Page(BasePage):
 class LayerPage(BasePage):
     """Page added as overlay or underlay on a Page."""
 
-    def __init__(self, nfile, npage, copyname, angle, scale, crop, offset, laypos, size_orig):
+    def __init__(self, nfile, npage, copyname, angle, scale, crop, offset, laypos, size_orig: Dims):
         super().__init__(nfile, npage, copyname, angle, scale, crop, size_orig)
         #: Left, right, top, bottom offset from dest page edges
         self.offset = offset
@@ -225,7 +237,7 @@ class LayerPage(BasePage):
         self.crop = self.rotate_array(self.crop, rt)
         self.offset = self.rotate_array(self.offset, rt)
         self.angle = (self.angle + int(angle)) % 360
-        self.size = self.size_orig if self.angle in [0, 180] else list(reversed(self.size_orig))
+        self.size = self.size_orig if self.angle in [0, 180] else self.size_orig.flipped()
         return True
 
     def serialize(self):
@@ -478,7 +490,7 @@ class PageAdder:
                 return None
             pdfdoc, nfile, _ = doc_data
             copyname = pdfdoc.copyname
-            size = pdfdoc.get_page(npage - 1).get_size()
+            size = Dims._make(pdfdoc.get_page(npage - 1).get_size())
             ld = nfile, npage, copyname, angle, scale, crop, offset, laypos, size
             layerpages.append(LayerPage(*ld))
         return layerpages
@@ -519,7 +531,7 @@ class PageAdder:
                     angle,
                     scale,
                     crop,
-                    page.get_size(),
+                    Dims._make(page.get_size()),
                     pdfdoc.basename,
                     layerpages,
                 )
@@ -650,14 +662,14 @@ class PDFRenderer(threading.Thread, GObject.GObject):
         with pdfdoc.render_lock:
             page.render(cr)
 
-    def update(self, p, ref, zoom, is_preview):
+    def update(self, p: Page, ref, zoom, is_preview):
         """Render and emit updated thumbnails."""
         if (is_preview and p.preview) and (p.resample != -1):
             # Reuse the preview if it exist, unless it is marked for re-render
             thumbnail = p.preview
         else:
-            wpoi = p.size[0] * (1 - p.crop[0] - p.crop[1])
-            hpoi = p.size[1] * (1 - p.crop[2] - p.crop[3])
+            wpoi = p.size.width * (1 - p.crop[0] - p.crop[1])
+            hpoi = p.size.height * (1 - p.crop[2] - p.crop[3])
             wpix = int(0.5 + wpoi * p.scale * zoom)
             hpix = int(0.5 + hpoi * p.scale * zoom)
             wpix0, hpix0 = (wpix, hpix) if p.angle in [0, 180] else (hpix, wpix)
@@ -670,13 +682,13 @@ class PDFRenderer(threading.Thread, GObject.GObject):
                 cr.rotate(-rotation * pi / 180)
                 cr.translate(-wpix / 2, -hpix / 2)
             cr.scale(wpix / wpoi, hpix / hpoi)
-            cr.translate(-p.crop[0] * p.size[0], -p.crop[2] * p.size[1])
+            cr.translate(-p.crop[0] * p.size.width, -p.crop[2] * p.size.height)
             self.add_layers(cr, p, layer='UNDERLAY')
             cr.save()
             if rotation > 0:
-                cr.translate(p.size[0] / 2, p.size[1] / 2)
+                cr.translate(*p.size.scaled(0.5))
                 cr.rotate(rotation * pi / 180)
-                cr.translate(-p.size_orig[0] / 2, -p.size_orig[1] / 2)
+                cr.translate(*p.size.scaled(-0.5))
             self.render(cr, p)
             cr.restore()
             self.add_layers(cr, p, layer='OVERLAY')
@@ -695,7 +707,7 @@ class PDFRenderer(threading.Thread, GObject.GObject):
         )
         return thumbnail.get_width(), thumbnail.get_height()
 
-    def add_layers(self, cr, p, layer):
+    def add_layers(self, cr, p: Page, layer):
         layerpages = p.layerpages if layer == 'OVERLAY' else reversed(p.layerpages)
         for lp in layerpages:
             if self.quit:
@@ -703,20 +715,20 @@ class PDFRenderer(threading.Thread, GObject.GObject):
             if layer != lp.laypos:
                 continue
             cr.save()
-            cr.translate(p.size[0] * lp.offset[0], p.size[1] * lp.offset[2])
+            cr.translate(p.size.width * lp.offset[0], p.size.height * lp.offset[2])
             cr.scale(lp.scale / p.scale, lp.scale / p.scale)
-            x = lp.size[0] * lp.crop[0]
-            y = lp.size[1] * lp.crop[2]
-            w = lp.size[0] * (1 - lp.crop[0] - lp.crop[1])
-            h = lp.size[1] * (1 - lp.crop[2] - lp.crop[3])
+            x = lp.size.width * lp.crop[0]
+            y = lp.size.height * lp.crop[2]
+            w = lp.size.width * (1 - lp.crop[0] - lp.crop[1])
+            h = lp.size.height * (1 - lp.crop[2] - lp.crop[3])
             cr.translate(-x, -y)
             cr.rectangle(x, y, w, h)
             cr.clip()
             rotation = round((int(lp.angle) % 360) / 90) * 90
             if rotation > 0:
-                cr.translate(lp.size[0] / 2, lp.size[1] / 2)
+                cr.translate(*lp.size.scaled(0.5))
                 cr.rotate(rotation * pi / 180)
-                cr.translate(-lp.size_orig[0] / 2, -lp.size_orig[1] / 2)
+                cr.translate(*lp.size.scaled(-0.5))
             self.render(cr, lp)
             cr.restore()
 
