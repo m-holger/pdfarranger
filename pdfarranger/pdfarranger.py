@@ -445,13 +445,12 @@ class PdfArranger(Gtk.Application):
 
     def generate_booklet(self, _action, _option, _unknown):
         self.undomanager.commit("generate booklet")
-        model = self.iconview.get_model()
 
         selection = self.iconview.get_selected_items()
         selection.sort(key=lambda x: x.get_indices()[0])
-        ref_list = [Gtk.TreeRowReference.new(model, path)
+        ref_list = [Gtk.TreeRowReference.new(self.model, path)
                     for path in selection]
-        pages = [model.get_value(model.get_iter(ref.get_path()), 0)
+        pages = [self.model.get_value(self.model.get_iter(ref.get_path()), 0)
                  for ref in ref_list]
 
         # Need uniform page size.
@@ -464,7 +463,7 @@ class PdfArranger(Gtk.Application):
                 return
 
         # We need a multiple of 4
-        blank_page_count = 0 if len(pages) % 4 == 0 else 4 - len(pages) % 4
+        blank_page_count = -len(pages) % 4
         if blank_page_count > 0:
             file = exporter.create_blank_page(self.tmp_dir, pages[0].size_in_points())
             adder = PageAdder(self)
