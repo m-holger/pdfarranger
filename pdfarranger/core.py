@@ -160,8 +160,8 @@ class Sides(NamedTuple):
 
 
 class Dims(NamedTuple):
-    width: Numeric
-    height: Numeric
+    width: Numeric = 0
+    height: Numeric = 0
 
     def __neg__(self) -> "Dims":
         """
@@ -323,10 +323,19 @@ class Page(BasePage):
         self.basename = basename
         """The name of the original file"""
         self.layerpages = list(layerpages)
+        self.thumbnail: Optional[Dims] = None
 
     def __repr__(self):
         return (f"Page({self.nfile}, {self.npage}, {self.zoom}, '{self.copyname}', {self.angle}, "
                 f"{self.scale}, {self.crop}, {self.size_orig}, '{self.basename}', {self.layerpages})")
+
+    @property
+    def thumbnail_size(self) -> Dims:
+        return Dims() if self.thumbnail is None else Dims(self.thumbnail.get_width(), self.thumbnail.get_height())
+
+    @property
+    def thumbnail_flipped_size(self) -> Dims:
+        return self.thumbnail_size.flipped() if self.is_flipped else self.thumbnail_size
 
     def description(self):
         shortname = os.path.splitext(self.basename)[0]
