@@ -26,6 +26,7 @@ __all__ = [
 import sys
 import os
 import traceback
+import math
 import mimetypes
 import copy
 import pathlib
@@ -34,6 +35,7 @@ import tempfile
 import threading
 from typing import NamedTuple, Optional, Tuple, Union
 import gettext
+
 import gi
 from gi.repository import GObject
 from gi.repository import GLib
@@ -42,7 +44,6 @@ from gi.repository import Gtk
 gi.require_version("Poppler", "0.18")
 from gi.repository import Poppler  # for the rendering of pdf pages
 import cairo
-from math import pi
 
 
 try:
@@ -273,6 +274,25 @@ class BasePage:
         self.size = size_orig if angle in [0, 180] else size_orig.flipped()
         """Width and height"""
 
+    @property
+    def angle(self) -> int:
+        """Angle in degrees (clockwise, multiple of 90 and 0 <= angle < 360)"""
+        return self._angle
+
+    @angle.setter
+    def angle(self, value: int):
+        self._angle = 90 * round((value / 90) % 4)
+
+    @property
+    def angle_rad(self) -> float:
+        """Angle in radians"""
+        return self._angle * math.pi / 180
+
+    @property
+    def is_flipped(self) -> bool:
+        """True if page is rotated by 90 or 270 degrees"""
+        return (self._angle % 180) == 90
+
     def width_in_points(self) -> Numeric:
         """Return the page width in PDF points."""
         return self.size_in_points().width
@@ -326,8 +346,9 @@ class Page(BasePage):
         if rt == 0:
             return False
         self.crop = self.crop.rotated(rt)
-        self.angle = (self.angle + int(angle)) % 360
-        self.size = self.size_orig if self.angle in [0, 180] else self.size_orig.flipped()
+        self.angle += angle
+        if rt % 2 == 1:
+            self.size = self.size.flipped()
         for lp in self.layerpages:
             lp.rotate(rt)
         return True
@@ -400,8 +421,9 @@ class LayerPage(BasePage):
         if times != 0:
             self.crop = self.crop.rotated(times)
             self.offset = self.offset.rotated(times)
-            self.angle = (self.angle - 90 * times) % 360
-            self.size = self.size if times % 2 == 0 else self.size.flipped()
+            self.angle -= 90 * times
+            if times % 2 != 0:
+                self.size = self.size.flipped()
 
     def serialize(self):
         """Convert to string for copy/past operations."""
@@ -824,21 +846,20 @@ class PDFRenderer(threading.Thread, GObject.GObject):
             wpix = int(0.5 + wpoi * p.scale * zoom)
             hpix = int(0.5 + hpoi * p.scale * zoom)
             wpix0, hpix0 = (wpix, hpix) if p.angle in [0, 180] else (hpix, wpix)
-            rotation = round((int(p.angle) % 360) / 90) * 90
 
             thumbnail = cairo.ImageSurface(cairo.FORMAT_ARGB32, wpix0, hpix0)
             cr = cairo.Context(thumbnail)
-            if rotation > 0:
+            if p.angle > 0:
                 cr.translate(wpix0 / 2, hpix0 / 2)
-                cr.rotate(-rotation * pi / 180)
+                cr.rotate(-p.angle_rad)
                 cr.translate(-wpix / 2, -hpix / 2)
             cr.scale(wpix / wpoi, hpix / hpoi)
             cr.translate(-p.crop.left * p.size.width, -p.crop.top * p.size.height)
             self.add_layers(cr, p, layer='UNDERLAY')
             cr.save()
-            if rotation > 0:
+            if p.angle > 0:
                 cr.translate(*p.size.scaled(0.5))
-                cr.rotate(rotation * pi / 180)
+                cr.rotate(p.angle_rad)
                 cr.translate(*p.size.scaled(-0.5))
             self.render(cr, p)
             cr.restore()
@@ -875,10 +896,9 @@ class PDFRenderer(threading.Thread, GObject.GObject):
             cr.translate(-x, -y)
             cr.rectangle(x, y, w, h)
             cr.clip()
-            rotation = round((int(lp.angle) % 360) / 90) * 90
-            if rotation > 0:
+            if lp.angle > 0:
                 cr.translate(*lp.size.scaled(0.5))
-                cr.rotate(rotation * pi / 180)
+                cr.rotate(lp.angle_rad)
                 cr.translate(*lp.size.scaled(-0.5))
             self.render(cr, lp)
             cr.restore()
