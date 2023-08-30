@@ -209,18 +209,10 @@ def check_content(parent, pdf_list):
     return Gtk.ResponseType.OK, True
 
 
-def _update_angle(model_page, source_page, output_page):
-    angle = model_page.angle
-    angle0 = source_page.Rotate if '/Rotate' in source_page else 0
-    if angle != 0:
-        new_angle = angle + angle0
-        if new_angle >= 360:
-            new_angle -= 360
-        output_page.Rotate = new_angle
-
-
-def _apply_geom_transform(pdf_output, new_page, row):
-    _update_angle(row, new_page, new_page)
+def _apply_geom_transform(pdf_output: pikepdf.Pdf, new_page: pikepdf.Page, row: Page) ->pikepdf.Dictionary:
+    if row.angle != 0:
+        angle0 = new_page.Rotate if '/Rotate' in new_page else 0
+        new_page.Rotate = (row.angle + angle0) % 360
     new_page.MediaBox = _mediabox(new_page, row.crop)
     # add_overlay() & add_underlay() will use TrimBox or CropBox if they exist
     if '/TrimBox' in new_page:
