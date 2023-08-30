@@ -14,92 +14,75 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+from typing import Optional, Tuple
+
 from gi.repository import Gtk
 from gi.repository import Gdk
-from math import pi
+import cairo
 
+from .core import Dims, Page
 
 class CellRendererImage(Gtk.CellRenderer):
     def __init__(self):
         Gtk.CellRenderer.__init__(self)
-        self.th1 = 2.  # border thickness
-        self.th2 = 3.  # shadow thickness
-        self.page = None
+        self.border_thickness: int = 2
+        self.shadow_thickness: int = 3
+        self.page: Optional[Page] = None
 
-    def set_page(self, page):
+    def set_page(self, page: Page):
         self.page = page
 
-    def get_geometry(self):
-        rotation = int(self.page.angle) % 360
-        rotation = round(rotation / 90) * 90
-        w0 = self.page.thumbnail.get_width()
-        h0 = self.page.thumbnail.get_height()
-        if rotation == 90 or rotation == 270:
-            w1, h1 = h0, w0
-        else:
-            w1, h1 = w0, h0
-        w2 = self.page.width_in_pixel()
-        h2 = self.page.height_in_pixel()
-
-        return w0, h0, w1, h1, w2, h2, rotation
-
-    def do_render(self, window, _widget, _background_area, cell_area, _expose_area):
+    def do_render(self, window: cairo.Context, _widget, _background_area, cell_area: Gdk.Rectangle, _expose_area):
         if not self.page.thumbnail:
             return
 
-        w0, h0, w1, h1, w2, h2, rotation = self.get_geometry()
-        th = int(2 * self.th1 + self.th2)
-        w = w2 + th
-        h = h2 + th
+        page_size = self.page.size_in_pixel()
+        th = 2 * self.border_thickness + self.shadow_thickness
+        decorated_size = page_size + th
 
-        x = cell_area.x
-        y = cell_area.y
-        if cell_area and w > 0 and h > 0:
-            x += self.get_property('xalign') * (cell_area.width - w)
-            y += self.get_property('yalign') * (cell_area.height - h)
-        window.translate(int(0.5 + x), int(0.5 + y))
+        allign = Dims(self.get_property('xalign'), self.get_property('yalign'))
+        cell_size = Dims(cell_area.width, cell_area.height)
+        xy = Dims(cell_area.x, cell_area.y) + (allign * (cell_size - decorated_size)).int_scaled(1)
+
+        window.translate(*xy)
 
         # shadow
         window.set_source_rgb(0.5, 0.5, 0.5)
-        window.rectangle(th, th, w2, h2)
+        window.rectangle(th, th, *page_size)
         window.fill()
 
         # border
         window.set_source_rgb(0, 0, 0)
-        window.rectangle(0, 0, w2 + 2 * self.th1, h2 + 2 * self.th1)
+        window.rectangle(0, 0, *(page_size + (2 * self.border_thickness)))
         window.fill()
 
         # image
         window.set_source_rgb(1, 1, 1)
-        window.rectangle(self.th1, self.th1, w2, h2)
+        window.rectangle(self.border_thickness, self.border_thickness, *page_size)
         window.fill_preserve()
         window.clip()
 
-        window.translate(self.th1, self.th1)
+        window.translate(self.border_thickness, self.border_thickness)
         scale = self.page.resample * self.page.zoom
         window.scale(scale, scale)
-        if rotation > 0:
-            window.translate(w1 / 2, h1 / 2)
-            window.rotate(rotation * pi / 180)
-            window.translate(-w0 / 2, -h0 / 2)
+        if self.page.angle > 0:
+            window.translate(*self.page.thumbnail_flipped_size.scaled(0.5))
+            window.rotate(self.page.angle_rad)
+            window.translate(*self.page.thumbnail_size.scaled(-0.5))
 
         window.set_source_surface(self.page.thumbnail)
         window.paint()
 
-    def do_get_size(self, _widget, cell_area=None):
-        x = y = 0
-        th = int(2 * self.th1 + self.th2)
-        w = self.page.width_in_pixel() + th
-        h = self.page.height_in_pixel() + th
-
-        if cell_area and w > 0 and h > 0:
-            x = self.get_property('xalign') * (
-                    cell_area.width - w - self.get_property('xpad'))
-            y = self.get_property('yalign') * (
-                    cell_area.height - h - self.get_property('ypad'))
-        w += 2 * self.get_property('xpad')
-        h += 2 * self.get_property('ypad')
-        return int(x), int(y), w, h
+    def do_get_size(self, _widget, cell_area: Optional[Gdk.Rectangle] = None) -> Tuple[int, int, int, int]:
+        decorated_size = self.page.size_in_pixel() + (2 * self.border_thickness + self.shadow_thickness)
+        pad = Dims(self.get_property('xpad'), self.get_property('ypad'))
+        if cell_area is None:
+            xy = Dims()
+        else:
+            allign = Dims(self.get_property('xalign'), self.get_property('yalign'))
+            cell_size = Dims(cell_area.width, cell_area.height)
+            xy = allign * (cell_size - decorated_size - pad)
+        return *xy, *(decorated_size + (pad * 2))
 
 
 class IconviewCursor(object):
