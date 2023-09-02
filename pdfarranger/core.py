@@ -285,6 +285,15 @@ class BasePage:
         """Return the page size in PDF points."""
         return self.size.scaled(self.scale).cropped(self.crop)
 
+    def width_in_pixel(self):
+        return self.size_in_pixel().width
+
+    def height_in_pixel(self):
+        return self.size_in_pixel().height
+
+    def size_in_pixel(self):
+        return self.size_in_points().int_scaled(self.zoom)
+
     @staticmethod
     def rotate_times(angle: int) -> int:
         """Convert an angle in degree to a number of 90° rotation (integer)."""
@@ -292,9 +301,11 @@ class BasePage:
 
 
 class Page(BasePage):
-    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop: Sides, size_orig: Dims, basename, layerpages):
+    def __init__(self, nfile, npage, zoom, copyname, angle, scale, crop: Sides, hide: Sides, size_orig: Dims, basename, layerpages):
         super().__init__(nfile, npage, copyname, angle, scale, Sides(*crop), size_orig)
         self.zoom = zoom
+        self.hide = Sides(*hide)
+        """Left, right, top, bottom hide"""
         self.thumbnail = None
         self.resample = -1
         self.preview = None
@@ -305,27 +316,20 @@ class Page(BasePage):
         self.layerpages = list(layerpages)
 
     def __repr__(self):
-        return (f"Page({self.nfile}, {self.npage}, {self.zoom}, '{self.copyname}', {self.angle}, "
-                f"{self.scale}, {self.crop}, {self.size_orig}, '{self.basename}', {self.layerpages})")
+        return (f"Page({self.nfile}, {self.npage}, {self.zoom}, '{self.copyname}', "
+                f"{self.angle}, {self.scale}, {self.crop}, {self.hide}, "
+                f"{self.size_orig}, '{self.basename}', {self.layerpages})")
 
     def description(self):
         shortname = os.path.splitext(self.basename)[0]
         return "".join([shortname, "\n", _("page"), " ", str(self.npage)])
-
-    def width_in_pixel(self):
-        return self.size_in_pixel().width
-
-    def height_in_pixel(self):
-        return self.size_in_pixel().height
-
-    def size_in_pixel(self):
-        return self.size_in_points().int_scaled(self.zoom)
 
     def rotate(self, angle: int):
         rt = self.rotate_times(angle)
         if rt == 0:
             return False
         self.crop = self.crop.rotated(rt)
+        self.hide = self.hide.rotated(rt)
         self.angle = (self.angle + int(angle)) % 360
         self.size = self.size_orig if self.angle in [0, 180] else self.size_orig.flipped()
         for lp in self.layerpages:
@@ -333,14 +337,15 @@ class Page(BasePage):
         return True
 
     def unmodified(self):
-        u = self.angle == 0 and self.crop == Sides() and self.scale == 1 and len(self.layerpages) == 0
+        u = (self.angle == 0 and self.crop == Sides() and self.hide == Sides() and
+             self.scale == 1 and len(self.layerpages) == 0)
         return u
 
     def serialize(self):
         """Convert to string for copy/past operations."""
         lpdata = [lp.serialize() for lp in self.layerpages]
         ts = [self.copyname, self.npage, self.basename, self.angle, self.scale]
-        ts += list(self.crop) + list(lpdata)
+        ts += list(self.crop) + list(self.hide) + list(lpdata)
         return "\n".join([str(v) for v in ts])
 
     def duplicate(self, incl_thumbnail=True):
@@ -513,7 +518,7 @@ class PDFDoc:
                 if not askpass:
                     raise e
 
-    def __init__(self, filename, basename, stat, tmp_dir, parent):
+    def __init__(self, filename, basename, blank_size, stat, tmp_dir, parent):
         self.render_lock = threading.Lock()
         self.filename = os.path.abspath(filename)
         self.stat = stat
@@ -521,6 +526,7 @@ class PDFDoc:
             self.basename = os.path.basename(filename)
         else:  # When copy-pasting
             self.basename = basename
+        self.blank_size = blank_size  # != None if page is blank
         self.password = ""
         filemime = mimetypes.guess_type(self.filename)[0]
         if not filemime:
@@ -592,7 +598,7 @@ class PageAdder:
         self.before = before
         self.treerowref = treerowref
 
-    def get_pdfdoc(self, filename: str, basename: Optional[str] = None) -> Optional[Tuple[PDFDoc, int, bool]]:
+    def get_pdfdoc(self, filename: str, basename: Optional[str] = None, blank_size=None) -> Optional[Tuple[PDFDoc, int, bool]]:
         """Get the pdfdoc object for the filename.
 
         pdfqueue is searched for the filename. If it is not found a pdfdoc is created
@@ -620,7 +626,7 @@ class PageAdder:
                 return it_pdfdoc, i + 1, False
 
         try:
-            pdfdoc = PDFDoc(filename, basename, self.stat_cache[filename],
+            pdfdoc = PDFDoc(filename, basename, blank_size, self.stat_cache[filename],
                             self.app.tmp_dir, self.app.window)
             self.app.pdfqueue.append(pdfdoc)
             return pdfdoc, len(self.app.pdfqueue), True
@@ -647,7 +653,7 @@ class PageAdder:
             layerpages.append(LayerPage(*ld))
         return layerpages
 
-    def addpages(self, filename, page=-1, basename=None, angle=0, scale=1.0, crop=Sides(0, 0, 0, 0), layerdata=None):
+    def addpages(self, filename, page=-1, basename=None, angle=0, scale=1.0, crop=Sides(0, 0, 0, 0), hide=Sides(0, 0, 0, 0), layerdata=None):
         c = 'pdf' if page == -1 and os.path.splitext(filename)[1].lower() == '.pdf' else 'other'
         self.content.append(c)
         self.pdfqueue_used = len(self.app.pdfqueue) > 0
@@ -682,6 +688,7 @@ class PageAdder:
                     angle,
                     scale,
                     crop,
+                    hide,
                     Dims(*page.get_size()),
                     pdfdoc.basename,
                     layerpages,
@@ -839,10 +846,22 @@ class PDFRenderer(threading.Thread, GObject.GObject):
             if rotation > 0:
                 cr.translate(*p.size.scaled(0.5))
                 cr.rotate(rotation * pi / 180)
-                cr.translate(*p.size.scaled(-0.5))
+                cr.translate(*p.size_orig.scaled(-0.5))
             self.render(cr, p)
             cr.restore()
             self.add_layers(cr, p, layer='OVERLAY')
+
+            if p.hide != Sides():
+                cr.set_source_rgb(1, 1, 1)
+                cr.rectangle(0, 0, p.size.width, p.size.height)
+                x = p.size.width * p.hide.left
+                y = p.size.height * p.hide.top
+                w = p.size.width * (1 - p.hide.left - p.hide.right)
+                h = p.size.height * (1 - p.hide.top - p.hide.bottom)
+                cr.rectangle(x, y, w, h)
+                cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+                cr.fill()
+
         if self.quit:
             return 0, 0
 
@@ -879,7 +898,7 @@ class PDFRenderer(threading.Thread, GObject.GObject):
             if rotation > 0:
                 cr.translate(*lp.size.scaled(0.5))
                 cr.rotate(rotation * pi / 180)
-                cr.translate(*lp.size.scaled(-0.5))
+                cr.translate(*lp.size_orig.scaled(-0.5))
             self.render(cr, lp)
             cr.restore()
 

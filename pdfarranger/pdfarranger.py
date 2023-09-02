@@ -271,7 +271,7 @@ class PdfArranger(Gtk.Application):
         self.disable_quit = False
         multiprocessing.set_start_method('spawn')
         self.quit_flag = multiprocessing.Event()
-        self.layer_pos = 50, 50
+        self.layer_pos = 0.5, 0.5
 
         # Clipboard for cut copy paste
         self.clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
@@ -384,7 +384,9 @@ class PdfArranger(Gtk.Application):
             ('rotate', self.rotate_page_action, 'i'),
             ('delete', self.on_action_delete),
             ('duplicate', self.duplicate),
-            ('page-format', self.page_format_dialog),
+            ('page-size', self.page_size_dialog),
+            ('crop', self.crop_dialog),
+            ('hide', self.hide_dialog),
             ('crop-white-borders', self.crop_white_borders),
             ('export-selection', self.choose_export_selection_pdf_name, 'i'),
             ('export-all', self.on_action_export_all),
@@ -441,7 +443,10 @@ class PdfArranger(Gtk.Application):
             adder = PageAdder(self)
             if len(selection) > 0:
                 adder.move(Gtk.TreeRowReference.new(model, selection[-1]), False)
-            adder.addpages(exporter.create_blank_page(self.tmp_dir, page_size))
+            file, _ = exporter.get_blank_doc(adder, self.pdfqueue, self.tmp_dir, page_size)
+            if file is None:
+                return
+            adder.addpages(file)
             adder.commit(select_added=False, add_to_undomanager=True)
 
     def generate_booklet(self, _action, _option, _unknown):
@@ -455,6 +460,8 @@ class PdfArranger(Gtk.Application):
         pages = [model.get_value(model.get_iter(ref.get_path()), 0)
                  for ref in ref_list]
 
+        self.apply_hide_margins_on_pages(pages)
+
         # Need uniform page size.
         p1w, p1h = pages[0].size_in_points()
         for page in pages[1:]:
@@ -467,8 +474,11 @@ class PdfArranger(Gtk.Application):
         # We need a multiple of 4
         blank_page_count = 0 if len(pages) % 4 == 0 else 4 - len(pages) % 4
         if blank_page_count > 0:
-            file = exporter.create_blank_page(self.tmp_dir, pages[0].size_in_points())
             adder = PageAdder(self)
+            a = adder, self.pdfqueue, self.tmp_dir, pages[0].size_in_points()
+            file, _npage = exporter.get_blank_doc(*a)
+            if file is None:
+                return
             for __ in range(blank_page_count):
                 adder.addpages(file)
             pages += adder.pages
@@ -1220,6 +1230,9 @@ class PdfArranger(Gtk.Application):
             pages = [self.model[row][0].duplicate(incl_thumbnail=False) for row in selection]
         else:
             pages = [row[0].duplicate(incl_thumbnail=False) for row in self.model]
+
+        self.apply_hide_margins_on_pages(pages)
+
         if exportmode == 'ALL_TO_SINGLE':
             self.set_save_file(files_out[0])
         else:
@@ -1525,19 +1538,23 @@ class PdfArranger(Gtk.Application):
     def paste_as_layer(self, data, destination, laypos, offset_xy=None):
         page_stack = []
         pageadder = PageAdder(self)
-        for filename, npage, _basename, angle, scale, crop, layerdata in data:
+        for filename, npage, _basename, angle, scale, crop, hide, layerdata in data:
             d = [[filename, npage, angle, scale, laypos, crop, Sides()]] + layerdata
-            page_stack.append(pageadder.get_layerpages(d))
+            lps = pageadder.get_layerpages(d)
+            self.apply_hide_margins_on_layerpages(lps, hide)
+            page_stack.append(lps)
             if page_stack[-1] is None:
                 return
         if not self.is_paste_layer_available(destination):
             return
         dpage = self.model[destination[-1]][0]
-        lpage = page_stack[0][0]
+        lpage_stack = page_stack[0]
         if offset_xy is None:
-            offset_xy = pageutils.PastePageLayerDialog(self, dpage, lpage, laypos).get_offset()
+            a = self.window, dpage, lpage_stack, self.model, self.pdfqueue, laypos, self.layer_pos
+            offset_xy = pageutils.PastePageLayerDialog(*a).get_offset()
             if offset_xy is None:
                 return
+            self.layer_pos = offset_xy
             self.undomanager.commit("Add Layer")
             self.set_unsaved(True)
 
@@ -1551,10 +1568,12 @@ class PdfArranger(Gtk.Application):
             dwidth, dheight = dpage.size[0] * dpage.scale, dpage.size[1] * dpage.scale
             scalex = (dpage.width_in_points() - lp0.width_in_points()) / dwidth
             scaley = (dpage.height_in_points() - lp0.height_in_points()) / dheight
-            lp0.offset = Sides(left=dpage.crop.left + off_x * scalex,
-                               right=1 - lp0.offset.left - lp0.width_in_points() / dwidth,
-                               top=dpage.crop.top + off_y * scaley,
-                               bottom=1 - lp0.offset.top - lp0.height_in_points() / dheight)
+            left = dpage.crop.left + off_x * scalex
+            top = dpage.crop.top + off_y * scaley
+            lp0.offset = Sides(left=left,
+                               right=1 - left - lp0.width_in_points() / dwidth,
+                               top=top,
+                               bottom=1 - top - lp0.height_in_points() / dheight)
             dpage.layerpages.append(lp0)
 
             # Add layers from the pasted page
@@ -1591,7 +1610,7 @@ class PdfArranger(Gtk.Application):
         if len(selection) == 0:
             return False
         if not layer_support:
-            msg = _("Pikepdf >= 3 is needed for overlay/underlay/merge support.")
+            msg = _("Pikepdf >= 3 is needed for overlay/underlay/merge/hide margins support.")
             self.error_message_dialog(msg)
         return layer_support
 
@@ -1667,8 +1686,9 @@ class PdfArranger(Gtk.Application):
                 angle = int(tmp[3])
                 scale = float(tmp[4])
                 crop = [float(side) for side in tmp[5:9]]
+                hide = [float(side) for side in tmp[9:13]]
                 layerdata = []
-                i = 9
+                i = 13
                 while i < len(tmp):  # If page has overlay/underlay
                     lfilename = tmp[i]
                     lnpage = int(tmp[i + 1])
@@ -1679,7 +1699,7 @@ class PdfArranger(Gtk.Application):
                     loffset = [float(offs) for offs in tmp[i + 9:i + 13]]
                     layerdata.append([lfilename, lnpage, langle, lscale, laypos, lcrop, loffset])
                     i += 13
-                d.append((filename, npage, basename, angle, scale, crop, layerdata))
+                d.append((filename, npage, basename, angle, scale, crop, hide, layerdata))
         return d
 
     def set_paste_location(self, pastemode, data_is_filepaths):
@@ -2111,7 +2131,9 @@ class PdfArranger(Gtk.Application):
             ("reverse-order", self.reverse_order_available(selection)),
             ("delete", ne),
             ("duplicate", ne),
-            ("page-format", ne),
+            ("page-size", ne),
+            ("crop", ne),
+            ("hide", ne),
             ("rotate", ne),
             ("export-selection", ne),
             ("cut", ne),
@@ -2400,8 +2422,11 @@ class PdfArranger(Gtk.Application):
         ref = Gtk.TreeRowReference.new(self.model, selection[-1]) if before else None
         wdpage, hdpage = size[0] * cols, size[1] * rows
         ndpages = -(len(data) // -(cols * rows))
-        file = exporter.create_blank_page(self.tmp_dir, (wdpage, hdpage), ndpages)
         adder = PageAdder(self)
+        a = adder, self.pdfqueue, self.tmp_dir, (wdpage, hdpage), ndpages
+        file, _ = exporter.get_blank_doc(*a)
+        if file is None:
+            return
         adder.move(ref, before)
         adder.addpages(file)
         with GObject.signal_handler_block(self.iconview, self.id_selection_changed_event):
@@ -2432,27 +2457,117 @@ class PdfArranger(Gtk.Application):
         if metadata.edit(self.metadata, files, self.window):
             self.set_unsaved(True)
 
-    def page_format_dialog(self, _action, _parameter, _unknown):
-        """Opens a dialog box to define margins for page cropping and page size"""
+    def page_size_dialog(self, _action, _parameter, _unknown):
+        """Opens a dialog box to define page size."""
         selection = self.iconview.get_selected_items()
-        diag = pageutils.Dialog(self.iconview.get_model(), selection, self.window)
-        crop, newscale = diag.run_get()
-        with self.render_lock():
-            if crop is not None or newscale is not None:
-                self.undomanager.commit("Format")
-            updatestatus = False
-            if crop is not None:
-                if self.crop(selection, crop):
-                    updatestatus = True
-            if newscale is not None:
-                if pageutils.scale(self.model, selection, newscale):
-                    updatestatus = True
-            if updatestatus:
-                self.set_unsaved(True)
-                self.update_statusbar()
+        diag = pageutils.ScaleDialog(self.iconview.get_model(), selection, self.window)
+        newscale = diag.run_get()
+        if newscale is None:
+            return
+        if not pageutils.scale(self.model, selection, newscale):
+            return
+        self.undomanager.commit("Size")
+        self.set_unsaved(True)
+        self.update_statusbar()
         self.update_iconview_geometry()
         self.update_max_zoom_level()
         GObject.idle_add(self.render)
+
+    def crop_dialog(self, _action, _parameter, _unknown):
+        """Opens a dialog box to define margins for page cropping."""
+        s = self.iconview.get_selected_items()
+        a = self.window, s, self.model, self.pdfqueue, self.is_unsaved, 'CROP', self.update_crop
+        pageutils.CropHideDialog(*a)
+
+    def update_crop(self, crops, selection, is_unsaved):
+        self.undomanager.commit("Crop")
+        self.crop(selection, crops)
+        self.set_unsaved(is_unsaved)
+        self.update_statusbar()
+        self.update_iconview_geometry()
+        self.update_max_zoom_level()
+        GObject.idle_add(self.render)
+
+    def hide_dialog(self, _action, _parameter, _unknown):
+        """Opens a dialog box to define margins for page hiding."""
+        s = self.iconview.get_selected_items()
+        if not self.is_paste_layer_available(s):
+            return
+        a = self.window, s, self.model, self.pdfqueue, self.is_unsaved, 'HIDE', self.update_hide
+        pageutils.CropHideDialog(*a)
+
+    def update_hide(self, hide, selection, is_unsaved):
+        """Step 1 in update hide. This make hiding work in iconview.
+
+        Step 2 does the 'real' hiding. This is done with:
+        apply_hide_margins_on_pages() (at export and generate_booklet).
+        apply_hide_margins_on_layerpages() (at paste_as_layer).
+        """
+        self.undomanager.commit("Hide")
+        for num, row in enumerate(selection):
+            page = self.model[row][0]
+            page.hide = Sides(*hide[num])
+            page.resample = -1
+        self.set_unsaved(is_unsaved)
+        self.update_statusbar()
+        self.update_iconview_geometry()
+        self.update_max_zoom_level()
+        GObject.idle_add(self.render)
+
+    def apply_hide_margins_on_pages(self, pages):
+        """Step 2, does the "real" hiding of margins:
+
+        * Add a full size blank page under the layer stack
+        * Crop & offset the stack so that nothing is in the hidden margin area
+        """
+        if not layer_support:
+            return
+        pageadder = PageAdder(self)
+        for p in pages:
+            if all([p.hide[i] <= p.crop[i] for i in range(4)]):
+                continue
+            self.hide_layer_margins(p, p.layerpages, p.hide)
+            filename, nfile = exporter.get_blank_doc(pageadder, self.pdfqueue, self.tmp_dir, p.size)
+            if filename is None:
+                return
+            d = [[p.copyname, p.npage, p.angle, p.scale, 'OVERLAY', p.hide, p.hide]]
+            lp = pageadder.get_layerpages(d)
+            p.layerpages.insert(0, lp[0])
+            p.nfile = nfile
+            p.npage = 1
+            p.copyname = filename
+            p.hide = Sides()
+            p.angle = 0
+
+    def apply_hide_margins_on_layerpages(self, layerpages, hide):
+        """Step 2, hide margins on a layer stack. (called from paste_as_layer())"""
+        p = layerpages[0]
+        if all([hide[i] <= p.crop[i] for i in range(4)]):
+            return
+        self.hide_layer_margins(p, layerpages[1:], hide)
+        pageadder = PageAdder(self)
+        filename, _nfile = exporter.get_blank_doc(pageadder, self.pdfqueue, self.tmp_dir, p.size)
+        d = [[filename, 1, 0, p.scale, 'OVERLAY', p.crop, Sides()]]
+        lp = pageadder.get_layerpages(d)
+        p.crop = Sides(*hide)
+        p.offset = Sides(*hide)
+        layerpages.insert(0, lp[0])
+
+    @staticmethod
+    def hide_layer_margins(p, layerpages, hide):
+        """Crop and offset layers that are in the hidden margin."""
+        fully_hidden_layers = []
+        for num, lp in enumerate(layerpages):
+            scalex = (p.size.width * p.scale) / (lp.size.width * lp.scale)
+            scaley = (p.size.height * p.scale) / (lp.size.height * lp.scale)
+            sm = Sides(scalex, scalex, scaley, scaley)
+            outside = Sides(*(max(0, hide[i] - lp.offset[i]) for i in range(4)))
+            lp.crop += outside * sm
+            lp.offset = Sides(*(max(lp.offset[i], hide[i]) for i in range(4)))
+            if lp.crop.left + lp.crop.right >= 1 or lp.crop.top + lp.crop.bottom >= 1:
+                fully_hidden_layers.append(num)
+        for num in reversed(fully_hidden_layers):
+            layerpages.pop(num)
 
     def crop_white_borders(self, _action, _parameter, _unknown):
         selection = self.iconview.get_selected_items()

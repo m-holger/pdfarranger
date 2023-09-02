@@ -67,7 +67,31 @@ def layer_support():
     return layer_support
 
 
-def create_blank_page(tmpdir, size, npages=1):
+def get_blank_doc(pageadder, pdfqueue, tmpdir, size, npages=1):
+    """Search pdfqueue for a matching pdf with blank pages. Create it if it does not exist.
+
+    Some notes:
+    Blank pdf documents are created prior to export (vs created as needed at export)
+    because it will keep code simpler. For example rendering of thumbnails require no
+    extra for rendering of a blank page.
+
+    A document with several blank pages is needed if the page number under thumbnail
+    need to be something else than 1.
+    """
+    for i, pdfdoc in enumerate(pdfqueue):
+        if size == pdfdoc.blank_size and npages <= pdfdoc.document.get_n_pages():
+            filename = pdfdoc.copyname
+            nfile = i + 1
+            return filename, nfile
+    filename = _create_blank_page(tmpdir, size, npages)
+    doc_data = pageadder.get_pdfdoc(filename, basename=None, blank_size=size)
+    if doc_data is None:
+        return None, None
+    nfile = doc_data[1]
+    return filename, nfile
+
+
+def _create_blank_page(tmpdir, size, npages=1):
     """
     Create a temporary PDF file with npages empty pages.
     The size is in PDF unit (1/72 of inch).
@@ -606,6 +630,8 @@ class PrintOperation(Gtk.PrintOperation):
         self.connect("preview", self.preview, None)
         self.pdf_input = None
         self.message = self.MESSAGE
+        self.pages = [row[0].duplicate(incl_thumbnail=False) for row in app.model]
+        app.apply_hide_margins_on_pages(self.pages)
 
     def preview(self, operation, preview_op, print_ctx, parent, user_data):
         self.message = _("Rendering Preview…")
@@ -615,11 +641,11 @@ class PrintOperation(Gtk.PrintOperation):
         self.app.set_export_state(True, self.message)
         # Open pikepdf objects for all pages that has been modified
         nfiles = set()
-        for row in self.app.model:
-            if row[0].unmodified():
+        for p in self.pages:
+            if p.unmodified():
                 continue
-            nfiles.add(row[0].nfile)
-            for lp in row[0].layerpages:
+            nfiles.add(p.nfile)
+            for lp in p.layerpages:
                 nfiles.add(lp.nfile)
         self.pdf_input = [None] * len(self.app.pdfqueue)
         for nfile in nfiles:
@@ -636,7 +662,7 @@ class PrintOperation(Gtk.PrintOperation):
         cairo_ctx.scale(print_ctx.get_dpi_x() / 72, print_ctx.get_dpi_y() / 72)
         if page_num >= len(self.app.model):
             return
-        p = self.app.model[page_num][0]
+        p = self.pages[page_num]
         if p.unmodified():
             pdfdoc = self.app.pdfqueue[p.nfile - 1]
             page = pdfdoc.document.get_page(p.npage - 1)

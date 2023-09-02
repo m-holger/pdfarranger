@@ -27,7 +27,9 @@ _ = gettext.gettext
 # See https://gitlab.gnome.org/GNOME/gtk/-/blob/3.24.23/gdk/keynames.txt for list of keys
 _DEFAULT_ACCELS = [
     ('delete', 'Delete'),
-    ('page-format', 'c'),
+    ('page-size', 's'),
+    ('crop', 'c'),
+    ('hide', 'h'),
     ('rotate(90)', '<Primary>Right'),
     ('rotate(-90)', '<Primary>Left'),
     ('save', '<Primary>s'),

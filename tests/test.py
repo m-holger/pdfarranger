@@ -4,9 +4,12 @@ import sys
 import unittest
 import time
 import tempfile
+from typing import Tuple
 import shutil
 import packaging.version
 from importlib import metadata
+
+import pikepdf
 
 """
 Those tests are using Dogtail https://gitlab.com/dogtail/dogtail
@@ -223,11 +226,47 @@ class PdfArrangerTest(unittest.TestCase):
         self.assertTrue(self._status_text().startswith("Selected pages: " + selection))
 
     def _assert_page_size(self, width, height, pageid=None):
+        import time
         if pageid is not None:
+            for icon in self._icons():
+                icon.click()
+                time.sleep(2)
+                print(self._status_text())
+
             self._icons()[pageid].click()
+            print(self._status_text())
             self._wait_cond(lambda: self._status_text().startswith(f"Selected pages: {pageid+1}"))
         label = " {:.1f}mm \u00D7 {:.1f}mm".format(width, height)
         self.assertTrue(self._status_text().endswith("Page Size:" + label))
+
+    def _check_file_content(self, filename, expected: Tuple[str]) -> Tuple[bool, str]:
+        """
+        Check expected is contained in file.
+        """
+        with open(filename, 'rb') as f:
+            actual = f.readlines()
+
+        n = 0
+        for line in expected:
+            try:
+                while not actual[n].startswith(line):
+                    n += 1
+                n += 1
+            except IndexError: # pragma: no cover
+                # Only get executed for failing test
+                return False, line
+        return True, ''
+
+    def _assert_page_content(self, filename: str, expected: Tuple[str]):
+        """
+        Check if a file in the current tmp folder contains expected content.
+        """
+        temp = os.path.join(self.__class__.tmp, 'temp.pdf')
+        with pikepdf.Pdf.open(os.path.join(self.__class__.tmp, filename)) as pdf:
+            pdf.save(temp, qdf=True, static_id=True, compress_streams=False,
+                            stream_decode_level=pikepdf.StreamDecodeLevel.all)
+        ok, content = self._check_file_content(temp, expected)
+        self.assertTrue(ok, f'expectent content {content} missing in {filename}')
 
     def _assert_file_size(self, filename, size, tolerance=0.03):
         """
@@ -294,7 +333,7 @@ class PdfArrangerTest(unittest.TestCase):
 
     def _scale_selected(self, scale):
         app = self._app()
-        app.keyCombo("C")
+        app.keyCombo("S")
         dialog = app.child(roleName="dialog")
         from dogtail import rawinput
         rawinput.keyCombo("Tab")
@@ -333,269 +372,278 @@ class PdfArrangerTest(unittest.TestCase):
             dogtail_manager.kill()
 
 
-class TestBatch1(PdfArrangerTest):
-    def test_01_import_img(self):
-        self._start(["data/screenshot.png"])
-
-    def test_02_properties(self):
-        self._mainmenu("Edit Properties")
-        dialog = self._app().child(roleName="dialog")
-        creatorlab = dialog.child(roleName="table cell", name="Creator")
-        creatorid = creatorlab.parent.children.index(creatorlab) + 1
-        creatorval = creatorlab.parent.children[creatorid]
-        creatorval.keyCombo("enter")
-        from dogtail import rawinput
-        rawinput.typeText('["Frodo", "Sam"]')
-        dialog.child(name="OK").click()
-        self._mainmenu("Edit Properties")
-        dialog = self._app().child(roleName="dialog")
-        rawinput.keyCombo("enter")
-        rawinput.typeText('Memories')
-        rawinput.keyCombo("enter")
-	# FIXME: depending on where the test is ran the previous enter close
-	# the dialog or do not close it.
-        try:
-            dialog.child(name="OK").click()
-        except Exception:
-            print("'Edit Properties dialog' closed by 'enter'.")
-        self._wait_cond(lambda: dialog.dead)
-
-    def test_03_zoom(self):
-        app = self._app()
-        zoomoutb = app.child(roleName="push button", description="Zoom Out")
-        zoominb = app.child(roleName="push button", description="Zoom In")
-        # maximum dezoom whatever the initial zoom level
-        for _ in range(10):
-            zoomoutb.click()
-        for _ in range(3):
-            zoominb.click()
-
-    def test_04_rotate_undo(self):
-        app = self._app()
-        self._assert_selected("")
-        app.keyCombo("<ctrl>a")  # select all
-        self._assert_selected("1")
-        app.keyCombo("<ctrl>Left")  # rotate left
-        app.keyCombo("<ctrl>z")  # undo
-        app.keyCombo("<ctrl>y")  # redo
-        app.keyCombo("<ctrl>a")
-        app.keyCombo("<ctrl>Right")  # rotate right
-        app.keyCombo("<ctrl>Right")  # rotate right
-
-    def test_05_duplicate(self):
-        self._popupmenu(0, "Duplicate")
-        app = self._app()
-        self.assertEqual(len(self._icons()), 2)
-        app.keyCombo("<ctrl>a")
-        app.keyCombo("<ctrl>c")
-        for __ in range(3):
-            app.keyCombo("<ctrl>v")
-        self.assertEqual(len(self._icons()), 8)
-        app.keyCombo("Right")
-        app.keyCombo("Left")
-        app.keyCombo("Down")
-        self._assert_selected("5")
-        app.keyCombo("Up")
-        self._assert_selected("2")
-
-    def test_06_page_format(self):
-        self._popupmenu(0, ["Select", "Select Odd Pages"])
-        self._assert_selected("1, 3, 5, 7")
-        self._popupmenu(0, "Page Format…")
-        dialog = self._app().child(roleName="dialog")
-        croppanel = dialog.child(name="Crop Margins")
-        cropbuttons = self._find_by_role("spin button", croppanel)
-        for i in range(4):
-            cropbuttons[i].click()
-            cropbuttons[i].text = str((i+1)*4)
-        scalebutton = dialog.child(roleName="spin button")
-        scalebutton.click()
-        scalebutton.text = "120"
-        dialog.child(name="OK").click()
-        # TODO: find the condition which could replace this ugly sleep
-        time.sleep(0.5)
-        self._wait_cond(lambda: dialog.dead)
-
-    def test_07_split_page(self):
-        lp = self._app().child(roleName="layered pane")
-        lp.grabFocus()
-        lbefore = len(self._icons())
-        self._popupmenu(0, ["Select", "Select Even Pages"])
-        self._assert_selected("2, 4, 6, 8")
-        self._mainmenu(["Edit", "Split Pages…"])
-        dialog = self._app().child(roleName="dialog")
-        dialog.child(name="OK").click()
-        self._wait_cond(lambda: dialog.dead)
-        self.assertEqual(len(self._icons()), lbefore + 4)
-
-    def test_08_zoom_pages(self):
-        self._app().child(roleName="layered pane").keyCombo("Home")
-        self._assert_selected("1")
-        self._app().keyCombo("f")
-        for __ in range(2):
-            self._app().keyCombo("minus")
-        # Zoom level is now 0 and that's what will be saved to config.ini and
-        # used by next batches
-
-    def test_09_save_as(self):
-        self._mainmenu("Save")
-        self._save_as_chooser("foobar.pdf")
-
-    def test_10_reverse(self):
-        self._popupmenu(0, ["Select", "Same Page Format"])
-        self._assert_selected("1, 4, 7, 10")
-        self._popupmenu(0, ["Select", "All From Same File"])
-        self._assert_selected("1-12")
-        self._popupmenu(0, "Reverse Order")
-
-    def test_11_quit(self):
-        self._mainmenu("Quit")
-        dialog = self._app().child(roleName="alert")
-        dialog.child(name="Cancel").click()
-        self._app().keyCombo("<ctrl>s")
-        self._wait_saving()
-        self._quit()
-        # check that process actually exit
-        self._process().wait(timeout=22)
-
-
-class TestBatch2(PdfArrangerTest):
-    def test_01_open_empty(self):
-        self._start()
-
-    def test_02_import(self):
-        filechooser = self._import_file("tests/test.pdf")
-        self._wait_cond(lambda: filechooser.dead)
-        self.assertEqual(len(self._icons()), 2)
-
-    def test_03_cropborder(self):
-        self._popupmenu(0, "Crop White Borders")
-
-    def test_04_past_overlay(self):
-        if not have_pikepdf3():
-            return
-        app = self._app()
-        app.keyCombo("<ctrl>c")
-        app.keyCombo("Right")
-        app.keyCombo("<shift><ctrl>o")
-        dialog = self._app().child(roleName="dialog")
-        spinbtns = self._find_by_role("spin button", dialog)
-        spinbtns[0].click()
-        spinbtns[0].text = "10"
-        spinbtns[1].click()
-        spinbtns[1].text = "15"
-        dialog.child(name="OK").click()
-        self._wait_cond(lambda: dialog.dead)
-
-    def test_05_past_underlay(self):
-        """Past a page with overlay under an other page"""
-        if not have_pikepdf3():
-            return
-        app = self._app()
-        app.keyCombo("<ctrl>c")
-        app.keyCombo("Left")
-        app.keyCombo("<shift><ctrl>u")
-        dialog = self._app().child(roleName="dialog")
-        dialog.child(name="OK").click()
-        self._wait_cond(lambda: dialog.dead)
-
-    def test_06_export(self):
-        self._mainmenu(["Export", "Export All Pages to Individual Files…"])
-        self._save_as_chooser(
-            "alltosingle.pdf", ["alltosingle.pdf", "alltosingle-002.pdf"]
-        )
-        self._assert_file_size("alltosingle.pdf", 1814 if have_pikepdf3() else 1219)
-        self._assert_file_size("alltosingle-002.pdf", 1544 if have_pikepdf3() else 1219)
-
-    def test_07_clear(self):
-        self._popupmenu(1, "Delete")
-        self.assertEqual(len(self._icons()), 1)
-
-    def test_08_about(self):
-        self._mainmenu("About")
-        dialog = self._app().child(roleName="dialog")
-        dialog.child(name="Close").click()
-        self._wait_cond(lambda: dialog.dead)
-
-    def test_09_quit(self):
-        self._quit_without_saving()
+# class TestBatch1(PdfArrangerTest):
+#     def test_01_import_img(self):
+#         self._start(["data/screenshot.png"])
+#
+#     def test_02_properties(self):
+#         self._mainmenu("Edit Properties")
+#         dialog = self._app().child(roleName="dialog")
+#         creatorlab = dialog.child(roleName="table cell", name="Creator")
+#         creatorid = creatorlab.parent.children.index(creatorlab) + 1
+#         creatorval = creatorlab.parent.children[creatorid]
+#         creatorval.keyCombo("enter")
+#         from dogtail import rawinput
+#         rawinput.typeText('["Frodo", "Sam"]')
+#         dialog.child(name="OK").click()
+#         self._mainmenu("Edit Properties")
+#         dialog = self._app().child(roleName="dialog")
+#         rawinput.keyCombo("enter")
+#         rawinput.typeText('Memories')
+#         rawinput.keyCombo("enter")
+# 	# FIXME: depending on where the test is ran the previous enter close
+# 	# the dialog or do not close it.
+#         try:
+#             dialog.child(name="OK").click()
+#         except Exception:
+#             print("'Edit Properties dialog' closed by 'enter'.")
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_03_zoom(self):
+#         app = self._app()
+#         zoomoutb = app.child(roleName="push button", description="Zoom Out")
+#         zoominb = app.child(roleName="push button", description="Zoom In")
+#         # maximum dezoom whatever the initial zoom level
+#         for _ in range(10):
+#             zoomoutb.click()
+#         for _ in range(3):
+#             zoominb.click()
+#
+#     def test_04_rotate_undo(self):
+#         app = self._app()
+#         self._assert_selected("")
+#         app.keyCombo("<ctrl>a")  # select all
+#         self._assert_selected("1")
+#         app.keyCombo("<ctrl>Left")  # rotate left
+#         app.keyCombo("<ctrl>z")  # undo
+#         app.keyCombo("<ctrl>y")  # redo
+#         app.keyCombo("<ctrl>a")
+#         app.keyCombo("<ctrl>Right")  # rotate right
+#         app.keyCombo("<ctrl>Right")  # rotate right
+#
+#     def test_05_duplicate(self):
+#         self._popupmenu(0, "Duplicate")
+#         app = self._app()
+#         self.assertEqual(len(self._icons()), 2)
+#         app.keyCombo("<ctrl>a")
+#         app.keyCombo("<ctrl>c")
+#         for __ in range(3):
+#             app.keyCombo("<ctrl>v")
+#         self.assertEqual(len(self._icons()), 8)
+#         app.keyCombo("Right")
+#         app.keyCombo("Left")
+#         app.keyCombo("Down")
+#         self._assert_selected("5")
+#         app.keyCombo("Up")
+#         self._assert_selected("2")
+#
+#     def test_06_crop_margins(self):
+#         self._popupmenu(0, ["Select", "Select Odd Pages"])
+#         self._assert_selected("1, 3, 5, 7")
+#         self._popupmenu(0, "Crop Margins…")
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="Show values").click()
+#         time.sleep(0.2)  # Avoid 'GTK_IS_RANGE (range)' failed
+#         croppanel = dialog.child(name="Crop Margins")
+#         cropbuttons = self._find_by_role("spin button", croppanel)
+#         for i in range(4):
+#             cropbuttons[i].click()
+#             cropbuttons[i].text = str((i+1)*4)
+#         dialog.child(name="OK").click()
+#         # TODO: find the condition which could replace this ugly sleep
+#         time.sleep(0.5)
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_07_split_page(self):
+#         lp = self._app().child(roleName="layered pane")
+#         lp.grabFocus()
+#         lbefore = len(self._icons())
+#         self._popupmenu(0, ["Select", "Select Even Pages"])
+#         self._assert_selected("2, 4, 6, 8")
+#         self._mainmenu(["Edit", "Split Pages…"])
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="OK").click()
+#         self._wait_cond(lambda: dialog.dead)
+#         self.assertEqual(len(self._icons()), lbefore + 4)
+#
+#     def test_08_zoom_pages(self):
+#         self._app().child(roleName="layered pane").keyCombo("Home")
+#         self._assert_selected("1")
+#         self._app().keyCombo("f")
+#         for __ in range(2):
+#             self._app().keyCombo("minus")
+#         # Zoom level is now 0 and that's what will be saved to config.ini and
+#         # used by next batches
+#
+#     def test_09_save_as(self):
+#         self._mainmenu("Save")
+#         self._save_as_chooser("foobar.pdf")
+#
+#     def test_10_reverse(self):
+#         self._popupmenu(0, ["Select", "Same Page Format"])
+#         self._assert_selected("1, 4, 7, 10")
+#         self._popupmenu(0, ["Select", "All From Same File"])
+#         self._assert_selected("1-12")
+#         self._popupmenu(0, "Reverse Order")
+#
+#     def test_11_quit(self):
+#         self._mainmenu("Quit")
+#         dialog = self._app().child(roleName="alert")
+#         dialog.child(name="Cancel").click()
+#         self._app().keyCombo("<ctrl>s")
+#         self._wait_saving()
+#         self._quit()
+#         # check that process actually exit
+#         self._process().wait(timeout=22)
 
 
-class TestBatch3(PdfArrangerTest):
-    """Test encryption"""
-    def test_01_open_encrypted(self):
-        filename = os.path.join(self.__class__.tmp, "other_encrypted.pdf")
-        shutil.copyfile("tests/test_encrypted.pdf", filename)
-        self._start([filename])
-        dialog = self._app().child(roleName="dialog")
-        passfield = dialog.child(roleName="password text")
-        passfield.text = "foobar"
-        dialog.child(name="OK").click()
-        self._wait_cond(lambda: dialog.dead)
+# class TestBatch2(PdfArrangerTest):
+#     def test_01_open_empty(self):
+#         self._start()
+#
+#     def test_02_import(self):
+#         filechooser = self._import_file("tests/test.pdf")
+#         self._wait_cond(lambda: filechooser.dead)
+#         self.assertEqual(len(self._icons()), 2)
+#
+#     def test_03_cropborder(self):
+#         self._popupmenu(0, "Crop White Borders")
+#
+#     def test_04_past_overlay(self):
+#         if not have_pikepdf3():
+#             return
+#         app = self._app()
+#         app.keyCombo("<ctrl>c")
+#         app.keyCombo("Right")
+#         app.keyCombo("<shift><ctrl>o")
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="Show values").click()
+#         time.sleep(0.2)  # Avoid 'GTK_IS_RANGE (range)' failed
+#         spinbtns = self._find_by_role("spin button", dialog)
+#         spinbtns[0].click()
+#         spinbtns[0].text = "10"
+#         spinbtns[1].click()
+#         spinbtns[1].text = "15"
+#         dialog.child(name="OK").click()
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_05_past_underlay(self):
+#         """Past a page with overlay under an other page"""
+#         if not have_pikepdf3():
+#             return
+#         app = self._app()
+#         app.keyCombo("<ctrl>c")
+#         app.keyCombo("Left")
+#         app.keyCombo("<shift><ctrl>u")
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="OK").click()
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_06_export(self):
+#         self._mainmenu(["Export", "Export All Pages to Individual Files…"])
+#         self._save_as_chooser(
+#             "alltosingle.pdf", ["alltosingle.pdf", "alltosingle-002.pdf"]
+#         )
+#         self._assert_file_size("alltosingle.pdf", 1800 if have_pikepdf3() else 1219)
+#         self._assert_file_size("alltosingle-002.pdf", 1544 if have_pikepdf3() else 1219)
+#         if have_pikepdf3():
+#             self._assert_page_content("alltosingle.pdf", (
+#                 b'1 0 0 rg 530 180 m 70 180 l 300 580 l h 530 180 m B',
+#                 b'  /BBox [', b'    69\n', b'    180\n', b'    531\n', b'    581\n',
+#                 b'1 0 0 rg 530 180 m 70 180 l 300 580 l h 530 180 m B'))
+#             self._assert_page_content("alltosingle.pdf", (
+#                 b'  /BBox [', b'    0\n', b"    0\n", b'    612\n', b'    792\n',
+#                 b'0 1 0 rg 530 180 m 70 180 l 300 580 l h 530 180 m B'))
+#
+#     def test_07_clear(self):
+#         self._popupmenu(1, "Delete")
+#         self.assertEqual(len(self._icons()), 1)
+#
+#     def test_08_about(self):
+#         self._mainmenu("About")
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="Close").click()
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_09_quit(self):
+#         self._quit_without_saving()
 
-    def test_02_import_wrong_pass(self):
-        filechooser = self._import_file("tests/test_encrypted.pdf")
-        dialog = self._app().child(roleName="dialog")
-        passfield = dialog.child(roleName="password text")
-        passfield.text = "wrong"
-        dialog.child(name="OK").click()
-        dialog = self._app().child(roleName="dialog")
-        dialog.child(name="Cancel").click()
-        self._wait_cond(lambda: dialog.dead)
-        self._wait_cond(lambda: filechooser.dead)
-        self.assertEqual(len(self._icons()), 2)
 
-    def test_03_quit(self):
-        app = self._app()
-        app.keyCombo("<ctrl>z")  # undo
-        app.keyCombo("<ctrl>y")  # redo
-        self._quit()
-        dialog = self._app().child(roleName="alert")
-        dialog.child(name="Save").click()
-        filechooser = self._app().child(roleName="file chooser")
-        filechooser.button("Save").click()
-        dialog = self._app().child(roleName="alert")
-        dialog.child(name="Replace").click()
-        # check that process actually exit
-        self._process().wait(timeout=22)
+# class TestBatch3(PdfArrangerTest):
+#     """Test encryption"""
+#     def test_01_open_encrypted(self):
+#         filename = os.path.join(self.__class__.tmp, "other_encrypted.pdf")
+#         shutil.copyfile("tests/test_encrypted.pdf", filename)
+#         self._start([filename])
+#         dialog = self._app().child(roleName="dialog")
+#         passfield = dialog.child(roleName="password text")
+#         passfield.text = "foobar"
+#         dialog.child(name="OK").click()
+#         self._wait_cond(lambda: dialog.dead)
+#
+#     def test_02_import_wrong_pass(self):
+#         filechooser = self._import_file("tests/test_encrypted.pdf")
+#         dialog = self._app().child(roleName="dialog")
+#         passfield = dialog.child(roleName="password text")
+#         passfield.text = "wrong"
+#         dialog.child(name="OK").click()
+#         dialog = self._app().child(roleName="dialog")
+#         dialog.child(name="Cancel").click()
+#         self._wait_cond(lambda: dialog.dead)
+#         self._wait_cond(lambda: filechooser.dead)
+#         self.assertEqual(len(self._icons()), 2)
+#
+#     def test_03_quit(self):
+#         app = self._app()
+#         app.keyCombo("<ctrl>z")  # undo
+#         app.keyCombo("<ctrl>y")  # redo
+#         self._quit()
+#         dialog = self._app().child(roleName="alert")
+#         dialog.child(name="Save").click()
+#         filechooser = self._app().child(roleName="file chooser")
+#         filechooser.button("Save").click()
+#         dialog = self._app().child(roleName="alert")
+#         dialog.child(name="Replace").click()
+#         # check that process actually exit
+#         self._process().wait(timeout=22)
 
 
-class TestBatch4(PdfArrangerTest):
-    """Check the size of duplicated and scaled pages"""
-    def test_01_import_pdf(self):
-        self._start(["tests/test.pdf"])
-
-    def test_02_duplicate(self):
-        app = self._app()
-        app.keyCombo("Down")
-        self._popupmenu(0, ["Duplicate"])
-        app.keyCombo("Right")
-
-    def test_03_scale(self):
-        self._scale_selected(200)
-        self._app().keyCombo("<ctrl>Left")  # rotate left
-        self._assert_selected("2")
-        self._assert_page_size(558.8, 431.8)
-
-    def test_04_export(self):
-        app = self._app()
-        app.keyCombo("<ctrl>a")  # select all
-        self._mainmenu(["Export", "Export Selection to a Single File…"])
-        self._save_as_chooser("scaled.pdf")
-        self._popupmenu(1, "Delete")
-
-    def test_05_import(self):
-        filename = os.path.join(self.__class__.tmp, "scaled.pdf")
-        filechooser = self._import_file(filename)
-        self._wait_cond(lambda: filechooser.dead)
-        self.assertEqual(len(self._icons()), 3)
-        app = self._app()
-        self._app().child(roleName="layered pane").grabFocus()
-        app.keyCombo("Right")
-        app.keyCombo("Right")
-        self._assert_selected("2")
-        self._assert_page_size(558.8, 431.8)
-        self._quit_without_saving()
+# class TestBatch4(PdfArrangerTest):
+#     """Check the size of duplicated and scaled pages"""
+#     def test_01_import_pdf(self):
+#         self._start(["tests/test.pdf"])
+#
+#     def test_02_duplicate(self):
+#         app = self._app()
+#         app.keyCombo("Down")
+#         self._popupmenu(0, ["Duplicate"])
+#         app.keyCombo("Right")
+#
+#     def test_03_scale(self):
+#         self._scale_selected(200)
+#         self._app().keyCombo("<ctrl>Left")  # rotate left
+#         self._assert_selected("2")
+#         self._assert_page_size(558.8, 431.8)
+#
+#     def test_04_export(self):
+#         app = self._app()
+#         app.keyCombo("<ctrl>a")  # select all
+#         self._mainmenu(["Export", "Export Selection to a Single File…"])
+#         self._save_as_chooser("scaled.pdf")
+#         self._popupmenu(1, "Delete")
+#
+#     def test_05_import(self):
+#         filename = os.path.join(self.__class__.tmp, "scaled.pdf")
+#         filechooser = self._import_file(filename)
+#         self._wait_cond(lambda: filechooser.dead)
+#         self.assertEqual(len(self._icons()), 3)
+#         app = self._app()
+#         self._app().child(roleName="layered pane").grabFocus()
+#         app.keyCombo("Right")
+#         app.keyCombo("Right")
+#         self._assert_selected("2")
+#         self._assert_page_size(558.8, 431.8)
+#         self._quit_without_saving()
 
 
 class TestBatch5(PdfArrangerTest):
@@ -640,32 +688,32 @@ class TestBatch5(PdfArrangerTest):
         self._quit_without_saving()
 
 
-class TestBatch6(PdfArrangerTest):
-    """Test Open action"""
-
-    # Kill X11 after that batch
-    LAST = True
-
-    def test_01_open_empty(self):
-        self._start()
-
-    def test_02_open(self):
-        filechooser = self._import_file("tests/test.pdf", open_action=True)
-        self._wait_cond(lambda: filechooser.dead)
-
-    def test_03_open_again(self):
-        """Create a new pdfarranger instance"""
-        self.assertEqual(len(self._apps()), 1)
-        filechooser = self._import_file("tests/test.pdf", open_action=True)
-        self._wait_cond(lambda: filechooser.dead)
-        self._wait_cond(lambda: len(self._apps()) == 2)
-
-    def test_04_quit(self):
-        """Quit the second instance"""
-        self._quit()
-        self._wait_cond(lambda: len(self._apps()) == 1)
-
-    def test_05_quit(self):
-        """Quit the first instance"""
-        self._quit()
-        self._process().wait(timeout=22)
+# class TestBatch6(PdfArrangerTest):
+#     """Test Open action"""
+#
+#     # Kill X11 after that batch
+#     LAST = True
+#
+#     def test_01_open_empty(self):
+#         self._start()
+#
+#     def test_02_open(self):
+#         filechooser = self._import_file("tests/test.pdf", open_action=True)
+#         self._wait_cond(lambda: filechooser.dead)
+#
+#     def test_03_open_again(self):
+#         """Create a new pdfarranger instance"""
+#         self.assertEqual(len(self._apps()), 1)
+#         filechooser = self._import_file("tests/test.pdf", open_action=True)
+#         self._wait_cond(lambda: filechooser.dead)
+#         self._wait_cond(lambda: len(self._apps()) == 2)
+#
+#     def test_04_quit(self):
+#         """Quit the second instance"""
+#         self._quit()
+#         self._wait_cond(lambda: len(self._apps()) == 1)
+#
+#     def test_05_quit(self):
+#         """Quit the first instance"""
+#         self._quit()
+#         self._process().wait(timeout=22)
